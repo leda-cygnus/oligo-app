@@ -9,6 +9,8 @@ Internal lab management system for oligo synthesis operations.
 - Build and track synthesis runs (plate layout, reagents, CPG lots)
 - Record per-well results (OD, purity, MS, CE)
 - Generate shipping label `.docx` documents
+- Create and manage sales quotes with per-oligo pricing, discounts, and VAT
+- Export quotes as formatted `.docx` documents
 - Manage modification catalog and material lots
 
 ## Stack
@@ -25,7 +27,7 @@ Internal lab management system for oligo synthesis operations.
 oligo-app/
 ├── backend/        # Express API server (server.js)
 ├── frontend/       # React app (Vite)
-└── db/             # SQL migration files (migrate_001.sql … migrate_017.sql)
+└── db/             # SQL migration files (migrate_001.sql … migrate_018.sql)
 ```
 
 ## Setup
@@ -42,7 +44,7 @@ Run all migrations in order against your PostgreSQL instance:
 ```bash
 psql -h localhost -U <user> -d oligosynth -f db/migrate_001.sql
 psql -h localhost -U <user> -d oligosynth -f db/migrate_002.sql
-# ... repeat through migrate_017.sql
+# ... repeat through migrate_018.sql
 ```
 
 ### Backend
@@ -52,14 +54,13 @@ cd backend
 npm install
 ```
 
-Create a `.env` file (not committed):
+Copy `.env.example` to `.env` and fill in your values (the file is gitignored):
 
+```bash
+cp .env.example .env
 ```
-DB_HOST=localhost
-DB_PORT=5432
-DB_NAME=oligosynth
-PORT=3001
-```
+
+The `.env` includes database connection settings and company details used in generated documents (shipping labels, quote exports). See `.env.example` for all available keys.
 
 Start the server:
 
@@ -83,7 +84,19 @@ The app runs on `http://localhost:5173` by default.
 
 The app uses HTTP Basic Auth — the username and password you enter at login are passed directly as PostgreSQL credentials. Make sure the PostgreSQL user has appropriate permissions on the `oligosynth` database.
 
+## Quotes
+
+Quotes are linked to orders. From any order's action menu, choose **Create quote** or **View quote** to open the quote editor.
+
+- Pricing: `sequence length × base price per nt + purification surcharge`
+- Surcharge values are configurable via the ⚙ Surcharges button in the editor
+- Discounts can be applied as a percentage, a fixed amount, or both
+- VAT is applied on top of the discounted net price
+- Quotes can be exported as a `.docx` file using the **Download .docx** button (visible after saving)
+
+Pricing defaults and company details (name, address, phone, rep name/email) are configured in `backend/.env`.
+
 ## Notes
 
-- `backend/logo.png` is used in generated shipping label documents
+- `backend/logo.png` is used in generated shipping label and quote documents
 - The `db/` folder contains all schema migrations; run them sequentially on a fresh database to build the full schema
