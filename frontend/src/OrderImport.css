@@ -122,3 +122,101 @@
   white-space: nowrap;
   color: var(--accent);
 }
+
+/* ── TSV / Excel mode ── */
+.oi-tsv-area {
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: pre;
+  overflow-x: auto;
+  min-height: 160px;
+}
+
+.oi-tsv-hint {
+  margin-top: 7px;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+/* ── Customer modal ── */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 300;
+}
+
+.modal-box {
+  background: var(--surface);
+  border-radius: 10px;
+  padding: 28px 32px;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.28);
+  width: 90%;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.oi-cust-modal { max-width: 560px; }
+
+.oi-cust-section-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 10px;
+}
+
+.oi-cust-defaults {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 10px 14px;
+  margin-bottom: 4px;
+}
+
+.oi-cust-tabs {
+  display: flex;
+  gap: 2px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 3px;
+  width: fit-content;
+  margin-bottom: 14px;
+}
+
+.oi-cust-search {
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+.oi-cust-list {
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.oi-cust-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 0 10px;
+  padding: 9px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  transition: background 0.1s;
+}
+.oi-cust-row:last-child { border-bottom: none; }
+.oi-cust-row:hover { background: var(--surface2); }
+.oi-cust-row.selected { background: var(--accent-dim); }
+
+.oi-cust-name    { color: var(--text); font-weight: 500; }
+.oi-cust-company { color: var(--text-muted); font-size: 12px; }
+.oi-cust-email   { color: var(--text-dim); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.oi-cust-new-form { margin-top: 2px; }

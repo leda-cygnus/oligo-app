@@ -1,0 +1,218 @@
+/* ── Quote list ── */
+.qt-status {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 2px;
+  text-transform: lowercase;
+}
+.qt-status.draft    { background: var(--surface2);        color: var(--text-muted); border: 1px solid var(--border); }
+.qt-status.sent     { background: rgba(255,184,77,0.12);  color: var(--warn);       border: 1px solid rgba(255,184,77,0.25); }
+.qt-status.accepted { background: rgba(16,185,129,0.12);  color: #10b981;           border: 1px solid rgba(16,185,129,0.25); }
+.qt-status.rejected { background: var(--danger-dim);      color: var(--danger);     border: 1px solid rgba(217,58,81,0.25); }
+
+/* ── Editor layout ── */
+.qt-editor { max-width: 1000px; }
+
+.qt-editor-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+}
+
+.qt-editor-title {
+  flex: 1;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.qt-editor-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: var(--mono);
+}
+
+/* ── Lines table ── */
+.qt-lines-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.qt-lines-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.qt-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+.qt-table th {
+  text-align: left;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.qt-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  vertical-align: middle;
+}
+.qt-table tr:last-child td { border-bottom: none; }
+.qt-table tr.excluded td   { opacity: 0.38; }
+.qt-table tr:hover td      { background: var(--surface2); }
+
+.qt-seq {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.qt-purif-select {
+  font-family: var(--sans);
+  font-size: 12px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface2);
+  color: var(--text);
+  cursor: pointer;
+  min-width: 140px;
+}
+
+.qt-price-cell {
+  font-family: var(--mono);
+  font-size: 12px;
+  text-align: right;
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+
+/* ── Add oligos panel ── */
+.qt-add-toggle {
+  font-size: 12px;
+  color: var(--accent);
+  background: none;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 6px 14px;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+  margin-top: 6px;
+  transition: border-color 0.15s;
+}
+.qt-add-toggle:hover { border-color: var(--accent); }
+
+.qt-add-panel {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-top: 8px;
+  background: var(--surface);
+}
+
+/* ── Discount + summary ── */
+.qt-discount-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 20px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  flex-wrap: wrap;
+}
+
+.qt-discount-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.qt-discount-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.qt-discount-field input {
+  width: 90px;
+  padding: 5px 8px;
+  font-size: 13px;
+}
+
+.qt-discount-sep {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.qt-summary {
+  margin-top: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 20px;
+  min-width: 280px;
+  align-self: flex-end;
+}
+
+.qt-summary-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  padding: 3px 0;
+  color: var(--text-muted);
+}
+
+.qt-summary-row.total {
+  border-top: 1px solid var(--border);
+  margin-top: 6px;
+  padding-top: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.qt-summary-row.discount { color: var(--danger); }
+
+.qt-summary-amount {
+  font-family: var(--mono);
+  font-size: 13px;
+  text-align: right;
+}
+.qt-summary-row.total .qt-summary-amount { font-size: 15px; }
+
+.qt-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}

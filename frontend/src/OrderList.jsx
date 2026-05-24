@@ -18,7 +18,7 @@ const COLS = [
   { key: 'line_count',    label: 'Oligos' },
 ]
 
-export default function OrderList({ api, initialOrderId, initialCustomerId }) {
+export default function OrderList({ api, initialOrderId, initialCustomerId, onCreateQuote, onViewQuote }) {
   const [orders, setOrders]         = useState([])
   const [loading, setLoading]       = useState(true)
   const [error, setError]           = useState('')
@@ -30,6 +30,7 @@ export default function OrderList({ api, initialOrderId, initialCustomerId }) {
   const [detailLoading, setDL]      = useState(false)
 
   const [menuOpen, setMenuOpen]     = useState(null)
+  const [quoteSubOpen, setQuoteSubOpen] = useState(false)
   const menuRef                     = useRef()
 
   const [editOrder, setEditOrder]   = useState(null)
@@ -57,7 +58,7 @@ export default function OrderList({ api, initialOrderId, initialCustomerId }) {
   }, [initialCustomerId])
 
   useEffect(() => {
-    if (!menuOpen) return
+    if (!menuOpen) { setQuoteSubOpen(false); return }
     function handleClick(e) {
       if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(null)
     }
@@ -85,7 +86,12 @@ export default function OrderList({ api, initialOrderId, initialCustomerId }) {
 
   function openEdit(o) {
     setEditOrder(o)
-    setEditForm({ customer_name: o.customer_name ?? '', institute: o.institute ?? '', email: o.customer_email ?? '' })
+    setEditForm({
+      customer_ref:  o.customer_ref  ?? '',
+      customer_name: o.customer_name ?? '',
+      institute:     o.institute     ?? '',
+      email:         o.customer_email ?? '',
+    })
     setEditErr('')
     setMenuOpen(null)
   }
@@ -95,14 +101,15 @@ export default function OrderList({ api, initialOrderId, initialCustomerId }) {
     try {
       await api.put(`/orders/${editOrder.id}/customer`, editForm)
       setOrders(os => os.map(o => o.id === editOrder.id
-        ? { ...o, customer_name: editForm.customer_name, institute: editForm.institute, customer_email: editForm.email, customer_address: editForm.address }
+        ? { ...o, customer_ref: editForm.customer_ref, customer_name: editForm.customer_name, institute: editForm.institute, customer_email: editForm.email }
         : o
       ))
       setEditOrder(null)
     } catch {
       setEditErr('Save failed.')
     } finally {
-      setEditSaving(false) }
+      setEditSaving(false)
+    }
   }
 
   function openDelete(o) {
@@ -234,8 +241,38 @@ export default function OrderList({ api, initialOrderId, initialCustomerId }) {
                         <button className="btn-ghost"
                                 style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 14px', borderRadius: 0 }}
                                 onClick={() => openEdit(o)}>
-                          Edit customer info
+                          Edit order details
                         </button>
+
+                        {/* Quote submenu */}
+                        <div style={{ position: 'relative' }}
+                             onMouseEnter={() => setQuoteSubOpen(true)}
+                             onMouseLeave={() => setQuoteSubOpen(false)}>
+                          <button className="btn-ghost"
+                                  style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', textAlign: 'left', padding: '8px 14px', borderRadius: 0 }}>
+                            Quote <span style={{ opacity: 0.5, fontSize: 10 }}>▶</span>
+                          </button>
+                          {quoteSubOpen && (
+                            <div style={{
+                              position: 'absolute', right: '100%', top: 0, zIndex: 101,
+                              background: 'var(--surface)', border: '1px solid var(--border)',
+                              borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                              minWidth: 140, padding: '4px 0',
+                            }}>
+                              <button className="btn-ghost"
+                                      style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 14px', borderRadius: 0 }}
+                                      onClick={() => { setMenuOpen(null); onCreateQuote?.(o) }}>
+                                Create quote
+                              </button>
+                              <button className="btn-ghost"
+                                      style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 14px', borderRadius: 0 }}
+                                      onClick={() => { setMenuOpen(null); onViewQuote?.(o) }}>
+                                View quote
+                              </button>
+                            </div>
+                          )}
+                        </div>
+
                         <button className="btn-ghost"
                                 style={{ display: 'block', width: '100%', textAlign: 'left', padding: '8px 14px', borderRadius: 0, color: '#ef4444' }}
                                 onClick={() => openDelete(o)}>
@@ -325,7 +362,13 @@ export default function OrderList({ api, initialOrderId, initialCustomerId }) {
             minWidth: 360, maxWidth: 480, width: '90%',
             boxShadow: '0 8px 32px rgba(0,0,0,0.25)',
           }} onClick={e => e.stopPropagation()}>
-            <h3 style={{ marginBottom: 18 }}>Edit customer — Order #{editOrder.customer_ref}</h3>
+            <h3 style={{ marginBottom: 18 }}>Edit order details</h3>
+            <div className="field">
+              <label>Order number</label>
+              <input value={editForm.customer_ref}
+                     placeholder="e.g. 1042"
+                     onChange={e => setEditForm(f => ({ ...f, customer_ref: e.target.value }))} />
+            </div>
             <div className="field">
               <label>Customer name</label>
               <input value={editForm.customer_name}
