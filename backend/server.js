@@ -5,6 +5,7 @@ const cors = require('cors')
 const multer = require('multer')
 const AdmZip = require('adm-zip')
 const crypto = require('crypto')
+const { generateId, convertQuoteToOrder } = require('./idgen')
 const { Document, Packer, Paragraph, TextRun, PageBreak,
         BorderStyle, WidthType, ShadingType,
         Table, TableRow, TableCell, AlignmentType, ImageRun,
@@ -1454,7 +1455,7 @@ app.put('/api/surcharges', async (req, res) => {
 app.get('/api/quotes', async (req, res) => {
   await withDb(req, res, async (client) => {
     const r = await client.query(`
-      SELECT q.id, q.order_id, q.status, q.discount_pct, q.discount_abs, q.notes,
+      SELECT q.id, q.display_id, q.order_id, q.status, q.discount_pct, q.discount_abs, q.notes,
              to_char(q.created_at, 'YYYY-MM-DD') AS created_date,
              o.customer_ref, o.customer_name, o.customer_email,
              COUNT(ql.id) FILTER (WHERE ql.included)::int AS line_count,
@@ -1533,15 +1534,16 @@ app.post('/api/quotes', async (req, res) => {
   await withDb(req, res, async (client) => {
     await client.query('BEGIN')
     try {
+      const { displayId, internalSeq } = await generateId('quote', client)
       const qr = await client.query(
-        `INSERT INTO quote (order_id, discount_pct, discount_abs, status, notes)
-         VALUES ($1,$2,$3,$4,$5) RETURNING id`,
-        [order_id || null, discount_pct || 0, discount_abs || 0, status || 'draft', notes || null]
+        `INSERT INTO quote (display_id, internal_seq, order_id, discount_pct, discount_abs, status, notes)
+         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+        [displayId, internalSeq, order_id || null, discount_pct || 0, discount_abs || 0, status || 'draft', notes || null]
       )
       const quoteId = qr.rows[0].id
       await saveQuoteLines(client, quoteId, order_id || null, lines)
       await client.query('COMMIT')
-      res.json({ id: quoteId })
+      res.json({ id: quoteId, display_id: displayId, internal_seq: internalSeq })
     } catch (err) { await client.query('ROLLBACK'); throw err }
   })
 })
@@ -1570,6 +1572,23 @@ app.delete('/api/quotes/:id', async (req, res) => {
   await withDb(req, res, async (client) => {
     await client.query('DELETE FROM quote WHERE id=$1', [req.params.id])
     res.json({ ok: true })
+  })
+})
+
+// POST /api/quotes/:id/convert — convert a quote to a sales order (SO- prefix, same suffix)
+app.post('/api/quotes/:id/convert', async (req, res) => {
+  const quoteId = parseInt(req.params.id)
+  if (!quoteId) return res.status(400).json({ error: 'invalid quote id' })
+  await withDb(req, res, async (client) => {
+    await client.query('BEGIN')
+    try {
+      const so = await convertQuoteToOrder(quoteId, client)
+      await client.query('COMMIT')
+      res.json(so)
+    } catch (err) {
+      await client.query('ROLLBACK')
+      res.status(400).json({ error: err.message })
+    }
   })
 })
 
@@ -1707,7 +1726,7 @@ app.get('/api/quotes/:id/docx', async (req, res) => {
       : null
 
     const metaRows = [
-      mRow('Quotation #:', `Q-${q.id}${q.customer_ref ? `  (Order #${q.customer_ref})` : ''}`),
+      mRow('Quotation #:', `${q.display_id || `Q-${q.id}`}${q.customer_ref ? `  (Order #${q.customer_ref})` : ''}`),
       mRow('Date:', q.date_fmt),
       mRow('Submitted To:', customerLabel),
       q.customer_email ? mRow('Email:', q.customer_email) : null,
@@ -1813,7 +1832,7 @@ app.get('/api/quotes/:id/docx', async (req, res) => {
     })
 
     const buf  = await Packer.toBuffer(doc)
-    const name = `Quote-Q${q.id}${q.customer_ref ? `-Order${q.customer_ref}` : ''}.docx`
+    const name = `Quote-${q.display_id || `Q-${q.id}`}${q.customer_ref ? `-Order${q.customer_ref}` : ''}.docx`
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
     res.setHeader('Content-Disposition', `attachment; filename="${name}"`)
     res.send(buf)

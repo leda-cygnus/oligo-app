@@ -25,9 +25,9 @@ Internal lab management system for oligo synthesis operations.
 
 ```
 oligo-app/
-├── backend/        # Express API server (server.js)
+├── backend/        # Express API server (server.js, idgen.js)
 ├── frontend/       # React app (Vite)
-└── db/             # SQL migration files (migrate_001.sql … migrate_018.sql)
+└── db/             # SQL migration files (migrate_001.sql … migrate_019.sql)
 ```
 
 ## Setup
@@ -44,7 +44,7 @@ Run all migrations in order against your PostgreSQL instance:
 ```bash
 psql -h localhost -U <user> -d oligosynth -f db/migrate_001.sql
 psql -h localhost -U <user> -d oligosynth -f db/migrate_002.sql
-# ... repeat through migrate_018.sql
+# ... repeat through migrate_019.sql
 ```
 
 ### Backend
@@ -95,6 +95,26 @@ Quotes are linked to orders. From any order's action menu, choose **Create quote
 - Quotes can be exported as a `.docx` file using the **Download .docx** button (visible after saving)
 
 Pricing defaults and company details (name, address, phone, rep name/email) are configured in `backend/.env`.
+
+### Quote & sales order numbering
+
+Each quote is assigned a human-readable ID on creation, e.g. `Q-2026-K4M9R`.
+
+| Part | Example | Description |
+|---|---|---|
+| Prefix | `Q` / `SO` | `Q` for quotes, `SO` for sales orders |
+| Year | `2026` | 4-digit year of creation |
+| Suffix | `K4M9R` | 5-character random alphanumeric, uppercase, excluding ambiguous characters (`0`, `1`, `O`, `I`) |
+
+When a quote is converted to a sales order the suffix is preserved and only the prefix changes (`Q-2026-K4M9R` → `SO-2026-K4M9R`).
+
+The database also stores an internal sequential counter per entity type (e.g. `0047`) that is never exposed in the UI or documents. All list ordering is by `created_at` timestamp, not by ID.
+
+ID generation lives in `backend/idgen.js`. Run the unit tests with:
+
+```bash
+cd backend && node test-idgen.js
+```
 
 ## Notes
 

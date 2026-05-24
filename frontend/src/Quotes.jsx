@@ -198,7 +198,8 @@ function QuoteEditor({ api, quoteId, orderId, orderRef, customerName, surcharges
   const [saveErr, setSaveErr]       = useState('')
   const [showAddPanel, setShowAddPanel] = useState(false)
   const [showSurcharge, setShowSurcharge] = useState(false)
-  const [currentId, setCurrentId]   = useState(quoteId)   // tracks id after save
+  const [currentId, setCurrentId]     = useState(quoteId)
+  const [displayId, setDisplayId]     = useState(null)
 
   const surchargeMap = buildSurchargeMap(surcharges)
 
@@ -215,6 +216,7 @@ function QuoteEditor({ api, quoteId, orderId, orderRef, customerName, surcharges
           setDiscountAbs(q.discount_abs > 0 ? String(q.discount_abs) : '')
           setStatus(q.status || 'draft')
           setNotes(q.notes || '')
+          setDisplayId(q.display_id || null)
         } else if (orderId) {
           // New quote from order — pre-populate lines
           const order = await api.get(`/orders/${orderId}`)
@@ -268,6 +270,7 @@ function QuoteEditor({ api, quoteId, orderId, orderRef, customerName, surcharges
       } else {
         const r = await api.post('/quotes', payload)
         savedId = r.id
+        setDisplayId(r.display_id || null)
       }
       setCurrentId(savedId)
       onSaved(savedId)
@@ -285,7 +288,7 @@ function QuoteEditor({ api, quoteId, orderId, orderRef, customerName, surcharges
       const url  = URL.createObjectURL(blob)
       const a    = document.createElement('a')
       a.href     = url
-      a.download = `Quote-Q${currentId}${orderRef ? `-Order${orderRef}` : ''}.docx`
+      a.download = `Quote-${displayId || currentId}${orderRef ? `-Order${orderRef}` : ''}.docx`
       a.click()
       URL.revokeObjectURL(url)
     } catch {
@@ -297,7 +300,7 @@ function QuoteEditor({ api, quoteId, orderId, orderRef, customerName, surcharges
   const includedCount = lines.filter(l => l.included).length
 
   const title = quoteId
-    ? `Quote #${quoteId}`
+    ? `Quote ${displayId || `#${quoteId}`}`
     : `New Quote${orderRef ? ` — Order #${orderRef}` : ''}`
 
   return (
@@ -504,6 +507,7 @@ export default function Quotes({ api, initialOrderId, initialOrderRef, initialMo
   const [editCustomerName, setEditCustomerName] = useState(null)
   const [deleteQuote, setDeleteQuote] = useState(null)
   const [deleting, setDeleting]   = useState(false)
+  const [search, setSearch]       = useState('')
   const [filterOrderId, setFilterOrderId] = useState(
     initialMode === 'view' ? initialOrderId : null
   )
@@ -554,9 +558,17 @@ export default function Quotes({ api, initialOrderId, initialOrderRef, initialMo
 
   const surchargeMap = buildSurchargeMap(surcharges)
 
-  const displayed = filterOrderId
-    ? quotes.filter(q => q.order_id === filterOrderId)
-    : quotes
+  const q_term = search.trim().toLowerCase()
+  const displayed = quotes.filter(q => {
+    if (filterOrderId && q.order_id !== filterOrderId) return false
+    if (!q_term) return true
+    return (
+      (q.display_id      || '').toLowerCase().includes(q_term) ||
+      (q.customer_name   || '').toLowerCase().includes(q_term) ||
+      (q.customer_ref    || '').toLowerCase().includes(q_term) ||
+      (q.customer_email  || '').toLowerCase().includes(q_term)
+    )
+  })
 
   if (loading) return <div style={{ color: 'var(--text-muted)' }}>Loading…</div>
 
@@ -591,7 +603,16 @@ export default function Quotes({ api, initialOrderId, initialOrderRef, initialMo
             )}
           </p>
         </div>
-        <button className="btn-primary" onClick={() => openCreate()}>+ New quote</button>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <input
+            type="search"
+            placeholder="Search quote ID, customer…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            style={{ padding: '6px 10px', fontSize: 13, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', width: 220 }}
+          />
+          <button className="btn-primary" onClick={() => openCreate()}>+ New quote</button>
+        </div>
       </div>
 
       {displayed.length === 0 ? (
@@ -600,7 +621,7 @@ export default function Quotes({ api, initialOrderId, initialOrderRef, initialMo
         <table>
           <thead>
             <tr>
-              <th>Quote #</th>
+              <th>Quote No</th>
               <th>Order #</th>
               <th>Customer</th>
               <th>Date</th>
@@ -620,7 +641,7 @@ export default function Quotes({ api, initialOrderId, initialOrderRef, initialMo
               const total = net * (1 + VAT_RATE)
               return (
                 <tr key={q.id} style={{ cursor: 'pointer' }} onClick={() => openEdit(q)}>
-                  <td className="mono primary">#{q.id}</td>
+                  <td className="mono primary">{q.display_id || '—'}</td>
                   <td className="mono">{q.customer_ref ?? '—'}</td>
                   <td>{q.customer_name ?? '—'}</td>
                   <td className="mono" style={{ fontSize: 12 }}>{q.created_date}</td>
@@ -646,7 +667,7 @@ export default function Quotes({ api, initialOrderId, initialOrderRef, initialMo
       {deleteQuote && (
         <div className="modal-backdrop" onClick={() => setDeleteQuote(null)}>
           <div className="modal-box" style={{ maxWidth: 380 }} onClick={e => e.stopPropagation()}>
-            <h3 style={{ marginBottom: 10 }}>Delete Quote #{deleteQuote.id}?</h3>
+            <h3 style={{ marginBottom: 10 }}>Delete Quote {deleteQuote.display_id || `#${deleteQuote.id}`}?</h3>
             <p style={{ color: 'var(--text-dim)', marginBottom: 18, fontSize: 13 }}>
               This cannot be undone.
             </p>
