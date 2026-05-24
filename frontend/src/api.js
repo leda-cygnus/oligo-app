@@ -24,5 +24,8 @@ export function makeApi(credentials) {
       body: JSON.stringify(body),
     })
 
-  return { get, post, put, del, upload, postRaw }
+  const getRaw = (path) =>
+    fetch(`${BASE}${path}`, { method: 'GET', headers })
+
+  return { get, post, put, del, upload, postRaw, getRaw }
 }

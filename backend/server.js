@@ -1,4 +1,5 @@
-﻿const express = require('express')
+﻿require('dotenv').config()
+const express = require('express')
 const { Pool } = require('pg')
 const cors = require('cors')
 const multer = require('multer')
@@ -50,19 +51,6 @@ async function withDb(req, res, fn) {
     await pool.end()
   }
 }
-
-// GET /api/debug/constraints  (temporary — remove after diagnosis)
-app.get('/api/debug/constraints', async (req, res) => {
-  await withDb(req, res, async (client) => {
-    const result = await client.query(`
-      SELECT conname, pg_get_constraintdef(oid) AS definition
-      FROM   pg_constraint
-      WHERE  conrelid = 'order_line'::regclass
-      ORDER  BY conname
-    `)
-    res.json(result.rows)
-  })
-})
 
 // GET /api/modifications
 app.get('/api/modifications', async (req, res) => {
@@ -405,9 +393,9 @@ app.put('/api/customers/:id', async (req, res) => {
   })
 })
 
-// PUT /api/orders/:id/customer — edit customer name, institute, email
+// PUT /api/orders/:id/customer — edit order number, customer name, institute, email
 app.put('/api/orders/:id/customer', async (req, res) => {
-  const { customer_name, institute, email } = req.body
+  const { customer_ref, customer_name, institute, email } = req.body
   await withDb(req, res, async (client) => {
     const orderRes = await client.query('SELECT customer_id FROM "order" WHERE id = $1', [req.params.id])
     if (!orderRes.rows.length) return res.status(404).json({ error: 'Order not found' })
@@ -419,8 +407,8 @@ app.put('/api/orders/:id/customer', async (req, res) => {
       )
     }
     await client.query(
-      'UPDATE "order" SET customer_name = $1, customer_email = $2 WHERE id = $3',
-      [customer_name || null, email || null, req.params.id]
+      'UPDATE "order" SET customer_ref = $1, customer_name = $2, customer_email = $3 WHERE id = $4',
+      [customer_ref || null, customer_name || null, email || null, req.params.id]
     )
     res.json({ ok: true })
   })
@@ -479,7 +467,8 @@ function parseOrderText(raw) {
   const dateMatch         = t.match(/Order\s+#\d+\s*\(([^)]+)\)/)
   // Exclude the company's own address (footer); take the last remaining email (customer's)
   const allEmails     = [...t.matchAll(/[\w.+\-]+@[\w\-]+\.[\w]+(?:\.[\w]+)*/g)]
-  const customerEmails = allEmails.filter(m => !m[0].toLowerCase().includes('oligobiotech.com'))
+  const ownDomain = (process.env.COMPANY_DOMAIN || '').toLowerCase()
+  const customerEmails = allEmails.filter(m => !ownDomain || !m[0].toLowerCase().includes(ownDomain))
   const emailMatch    = customerEmails.length ? customerEmails[customerEmails.length - 1] : (allEmails.length ? allEmails[allEmails.length - 1] : null)
 
   // Each line-item ends with price + ₪. Split on ₪ to isolate items cleanly.
@@ -1153,7 +1142,7 @@ function stickerTable(order) {
           children: [
             new Paragraph({
               spacing: { before: 300, after: 100 },
-              children: [tr('From: OLIGO BIOTECH LTD', { bold: true, size: 28 })],
+              children: [tr(`From: ${process.env.COMPANY_NAME || 'Our Company'}`, { bold: true, size: 28 })],
             }),
             new Paragraph({
               spacing: { after: 100 },
@@ -1431,4 +1420,405 @@ app.post('/api/runs/:id/start', async (req, res) => {
   })
 })
 
+// ── Surcharges ────────────────────────────────────────────────────────────────
+
+app.get('/api/surcharges', async (req, res) => {
+  await withDb(req, res, async (client) => {
+    const r = await client.query('SELECT * FROM surcharge_config ORDER BY id')
+    res.json(r.rows)
+  })
+})
+
+app.put('/api/surcharges', async (req, res) => {
+  const { surcharges } = req.body
+  if (!Array.isArray(surcharges)) return res.status(400).json({ error: 'surcharges array required' })
+  await withDb(req, res, async (client) => {
+    await client.query('BEGIN')
+    try {
+      for (const s of surcharges) {
+        await client.query(`
+          INSERT INTO surcharge_config (purification, surcharge)
+          VALUES ($1, $2)
+          ON CONFLICT (purification) DO UPDATE SET surcharge = EXCLUDED.surcharge, updated_at = NOW()
+        `, [s.purification, parseFloat(s.surcharge) || 0])
+      }
+      await client.query('COMMIT')
+      const r = await client.query('SELECT * FROM surcharge_config ORDER BY id')
+      res.json(r.rows)
+    } catch (err) { await client.query('ROLLBACK'); throw err }
+  })
+})
+
+// ── Quotes ────────────────────────────────────────────────────────────────────
+
+app.get('/api/quotes', async (req, res) => {
+  await withDb(req, res, async (client) => {
+    const r = await client.query(`
+      SELECT q.id, q.order_id, q.status, q.discount_pct, q.discount_abs, q.notes,
+             to_char(q.created_at, 'YYYY-MM-DD') AS created_date,
+             o.customer_ref, o.customer_name, o.customer_email,
+             COUNT(ql.id) FILTER (WHERE ql.included)::int AS line_count,
+             COALESCE(SUM(
+               CASE WHEN ql.included THEN
+                 length(ql.sequence_text) * 0.7 + COALESCE(sc.surcharge, 0)
+               ELSE 0 END
+             ), 0) AS subtotal
+      FROM quote q
+      LEFT JOIN "order" o ON o.id = q.order_id
+      LEFT JOIN quote_line ql ON ql.quote_id = q.id
+      LEFT JOIN surcharge_config sc ON sc.purification = ql.purification
+      GROUP BY q.id, o.customer_ref, o.customer_name, o.customer_email
+      ORDER BY q.created_at DESC
+    `)
+    res.json(r.rows)
+  })
+})
+
+app.get('/api/quotes/:id', async (req, res) => {
+  await withDb(req, res, async (client) => {
+    const qr = await client.query(`
+      SELECT q.*, to_char(q.created_at, 'YYYY-MM-DD') AS created_date,
+             o.customer_ref, o.customer_name, o.customer_email
+      FROM quote q LEFT JOIN "order" o ON o.id = q.order_id
+      WHERE q.id = $1
+    `, [req.params.id])
+    if (!qr.rows.length) return res.status(404).json({ error: 'Quote not found' })
+    const lr = await client.query(
+      'SELECT * FROM quote_line WHERE quote_id = $1 ORDER BY sort_order, id',
+      [req.params.id]
+    )
+    res.json({ ...qr.rows[0], lines: lr.rows })
+  })
+})
+
+// Helper: save lines for a quote (replaces all existing lines)
+async function saveQuoteLines(client, quoteId, orderId, lines) {
+  await client.query('DELETE FROM quote_line WHERE quote_id = $1', [quoteId])
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i]
+    let orderLineId = l.order_line_id || null
+    let sequenceId  = l.sequence_id  || null
+
+    if (l._new && orderId) {
+      const seqRes = await client.query('SELECT insert_idt_sequence($1) AS id', [l.sequence_text])
+      sequenceId = seqRes.rows[0].id
+      const pr = (await client.query('SELECT * FROM parse_idt_sequence($1)', [l.sequence_text])).rows[0]
+      const tokens = pr ? { bases: pr.clean_bases, oligo_type: pr.oligo_type, modifications: [] } : null
+      const mw = tokens ? calcMolWeight(tokens.bases, tokens.oligo_type) : null
+      await client.query(
+        'UPDATE sequence SET name=$1, order_id=$2, raw_idt=$3, tokens=$4, mol_weight=$5 WHERE id=$6',
+        [l.oligo_name || null, orderId, l.sequence_text, tokens ? JSON.stringify(tokens) : null, mw, sequenceId]
+      )
+      const lineNum = (await client.query(
+        'SELECT COALESCE(MAX(line_number),0)+1 AS n FROM order_line WHERE order_id=$1', [orderId]
+      )).rows[0].n
+      orderLineId = (await client.query(
+        `INSERT INTO order_line (order_id, sequence_id, customer_label, quantity_nmol, priority, line_number, notes)
+         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+        [orderId, sequenceId, l.oligo_name || null, l.scale_nmol || null, lineNum, lineNum,
+         `Purification: ${l.purification || 'Standard Desalt'}`]
+      )).rows[0].id
+    }
+
+    await client.query(`
+      INSERT INTO quote_line (quote_id, order_line_id, sequence_id, oligo_name, sequence_text, purification, scale_nmol, included, sort_order)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+    `, [quoteId, orderLineId, sequenceId, l.oligo_name || null, l.sequence_text,
+        l.purification || 'Standard Desalt', l.scale_nmol || null, l.included !== false, i])
+  }
+}
+
+app.post('/api/quotes', async (req, res) => {
+  const { order_id, discount_pct, discount_abs, status, notes, lines = [] } = req.body
+  await withDb(req, res, async (client) => {
+    await client.query('BEGIN')
+    try {
+      const qr = await client.query(
+        `INSERT INTO quote (order_id, discount_pct, discount_abs, status, notes)
+         VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+        [order_id || null, discount_pct || 0, discount_abs || 0, status || 'draft', notes || null]
+      )
+      const quoteId = qr.rows[0].id
+      await saveQuoteLines(client, quoteId, order_id || null, lines)
+      await client.query('COMMIT')
+      res.json({ id: quoteId })
+    } catch (err) { await client.query('ROLLBACK'); throw err }
+  })
+})
+
+app.put('/api/quotes/:id', async (req, res) => {
+  const { discount_pct, discount_abs, status, notes, lines } = req.body
+  await withDb(req, res, async (client) => {
+    await client.query('BEGIN')
+    try {
+      const qr = await client.query('SELECT order_id FROM quote WHERE id=$1', [req.params.id])
+      if (!qr.rows.length) return res.status(404).json({ error: 'Quote not found' })
+      const orderId = qr.rows[0].order_id
+      await client.query(`
+        UPDATE quote SET
+          discount_pct = $1, discount_abs = $2, status = $3, notes = $4, updated_at = NOW()
+        WHERE id = $5
+      `, [discount_pct ?? 0, discount_abs ?? 0, status || 'draft', notes || null, req.params.id])
+      if (Array.isArray(lines)) await saveQuoteLines(client, parseInt(req.params.id), orderId, lines)
+      await client.query('COMMIT')
+      res.json({ ok: true })
+    } catch (err) { await client.query('ROLLBACK'); throw err }
+  })
+})
+
+app.delete('/api/quotes/:id', async (req, res) => {
+  await withDb(req, res, async (client) => {
+    await client.query('DELETE FROM quote WHERE id=$1', [req.params.id])
+    res.json({ ok: true })
+  })
+})
+
+// GET /api/quotes/:id/docx — download quote as Word document
+app.get('/api/quotes/:id/docx', async (req, res) => {
+  const quoteId = parseInt(req.params.id)
+  if (!quoteId) return res.status(400).json({ error: 'invalid quote id' })
+
+  await withDb(req, res, async (client) => {
+    const qr = await client.query(`
+      SELECT q.*, to_char(q.created_at, 'DD/MM/YYYY') AS date_fmt,
+             o.customer_ref, o.customer_name, o.customer_email,
+             c.company_name AS institute, c.contact_name
+      FROM quote q
+      LEFT JOIN "order" o ON o.id = q.order_id
+      LEFT JOIN customer c ON c.id = o.customer_id
+      WHERE q.id = $1
+    `, [quoteId])
+    if (!qr.rows.length) return res.status(404).json({ error: 'Quote not found' })
+    const q = qr.rows[0]
+
+    const lr = await client.query(
+      `SELECT * FROM quote_line WHERE quote_id = $1 AND included = true ORDER BY sort_order, id`,
+      [quoteId]
+    )
+    const lines = lr.rows
+
+    const scr = await client.query('SELECT purification, surcharge FROM surcharge_config')
+    const surchargeMap = {}
+    for (const s of scr.rows) surchargeMap[s.purification] = parseFloat(s.surcharge) || 0
+
+    const PRICE_PER_NT = 0.7
+    const VAT_RATE     = 0.18
+    const TEAL         = '007a6a'
+    const LIGHT_GRAY   = 'f5f7fb'
+    const MID_GRAY     = '5a6278'
+    const BORDER_COL   = 'e0e4ef'
+
+    function lp(l) {
+      return ((l.sequence_text || '').replace(/[^A-Za-z]/g, '').length * PRICE_PER_NT)
+        + (surchargeMap[l.purification] || 0)
+    }
+    const subtotal = lines.reduce((s, l) => s + lp(l), 0)
+    const discPct  = parseFloat(q.discount_pct) || 0
+    const discAbs  = parseFloat(q.discount_abs) || 0
+    const disc     = subtotal * (discPct / 100) + discAbs
+    const net      = Math.max(0, subtotal - disc)
+    const vat      = net * VAT_RATE
+    const total    = net + vat
+
+    function fmtN(n) {
+      return '₪ ' + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+    }
+
+    // ── shared border helpers ──
+    const nb   = { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' }
+    const nbs  = { top: nb, bottom: nb, left: nb, right: nb, insideHorizontal: nb, insideVertical: nb }
+    const cb   = { style: BorderStyle.SINGLE, size: 4, color: BORDER_COL }
+    const cbs  = { top: cb, bottom: cb, left: cb, right: cb }
+    const cm   = { top: 80, bottom: 80, left: 120, right: 120 }
+
+    function tc(text, { bold=false, color='1a1d2e', bg=null, align=AlignmentType.LEFT,
+                         mono=false, sz=20, borders=cbs, width=null } = {}) {
+      return new TableCell({
+        borders,
+        width:   width ? { size: width, type: WidthType.DXA } : undefined,
+        shading: bg ? { fill: bg, type: ShadingType.CLEAR } : undefined,
+        margins: cm,
+        children: [new Paragraph({
+          alignment: align,
+          children: [new TextRun({ text: String(text ?? ''), bold, color, font: mono ? 'Courier New' : 'Aptos', size: sz })]
+        })]
+      })
+    }
+
+    // ── content width: A4 minus 1440 margins each side = 9026 DXA ──
+    const CW = 9026
+
+    // ── 1. Header: logo left, company info right ──
+    const logoCell = logoBuffer
+      ? [new TableCell({
+          borders: nbs, width: { size: 2000, type: WidthType.DXA }, margins: { top: 0, bottom: 0, left: 0, right: 300 },
+          children: [new Paragraph({ children: [new ImageRun({
+            data: logoBuffer, type: 'png',
+            transformation: { width: 130, height: 44 },
+            altText: { title: 'Logo', description: process.env.COMPANY_NAME || 'Logo', name: 'logo' }
+          })] })]
+        })]
+      : []
+
+    const infoWidth = logoBuffer ? CW - 2000 : CW
+    const infoCell = new TableCell({
+      borders: nbs, width: { size: infoWidth, type: WidthType.DXA },
+      children: [
+        new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun({ text: process.env.COMPANY_NAME || '', bold: true, font: 'Aptos', size: 24, color: TEAL })] }),
+        ...(process.env.COMPANY_ADDRESS ? [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun({ text: process.env.COMPANY_ADDRESS, font: 'Aptos', size: 18, color: MID_GRAY })] })] : []),
+        ...(process.env.COMPANY_PHONE_WEB ? [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun({ text: process.env.COMPANY_PHONE_WEB, font: 'Aptos', size: 18, color: MID_GRAY })] })] : []),
+      ]
+    })
+
+    const headerTable = new Table({
+      width: { size: CW, type: WidthType.DXA },
+      columnWidths: logoBuffer ? [2000, infoWidth] : [CW],
+      borders: nbs,
+      rows: [new TableRow({ children: [...logoCell, infoCell] })]
+    })
+
+    // ── 2. Divider ──
+    const divider = new Paragraph({
+      spacing: { before: 200, after: 0 },
+      border: { bottom: { style: BorderStyle.SINGLE, size: 8, color: TEAL, space: 4 } },
+      children: []
+    })
+
+    // ── 3. Title ──
+    const titlePara = new Paragraph({
+      spacing: { before: 280, after: 80 },
+      children: [new TextRun({ text: 'Sales Quotation', bold: true, font: 'Aptos', size: 40, color: TEAL })]
+    })
+
+    // ── 4. Meta table ──
+    function mRow(label, value) {
+      return new TableRow({ children: [
+        new TableCell({ borders: nbs, width: { size: 2000, type: WidthType.DXA }, margins: { top: 55, bottom: 55, left: 0, right: 0 },
+          children: [new Paragraph({ children: [new TextRun({ text: label, font: 'Aptos', size: 20, bold: true, color: MID_GRAY })] })] }),
+        new TableCell({ borders: nbs, width: { size: CW - 2000, type: WidthType.DXA }, margins: { top: 55, bottom: 55, left: 120, right: 0 },
+          children: [new Paragraph({ children: [new TextRun({ text: String(value ?? '—'), font: 'Aptos', size: 20, color: '1a1d2e' })] })] }),
+      ]})
+    }
+
+    const customerLabel = [q.customer_name, q.institute || q.company_name].filter(Boolean).join('  |  ') || '—'
+    const discLabel = disc > 0
+      ? (discPct > 0 && discAbs > 0 ? `${discPct}% + ₪${discAbs.toFixed(2)}`
+         : discPct > 0 ? `${discPct}%` : `₪${discAbs.toFixed(2)}`)
+      : null
+
+    const metaRows = [
+      mRow('Quotation #:', `Q-${q.id}${q.customer_ref ? `  (Order #${q.customer_ref})` : ''}`),
+      mRow('Date:', q.date_fmt),
+      mRow('Submitted To:', customerLabel),
+      q.customer_email ? mRow('Email:', q.customer_email) : null,
+      process.env.QUOTE_SUBMITTED_BY ? mRow('Submitted By:', process.env.QUOTE_SUBMITTED_BY) : null,
+      discLabel ? mRow('Discount:', discLabel) : null,
+    ].filter(Boolean)
+
+    const metaTable = new Table({
+      width: { size: CW, type: WidthType.DXA }, columnWidths: [2000, CW - 2000],
+      borders: nbs, rows: metaRows
+    })
+
+    // ── 5. Oligo table ──
+    // Cols: # | Name | Sequence | Len | Scale | Purification | Price
+    const COLS = [380, 2000, 2200, 520, 620, 1706, 1600]  // sum = 9026
+    const hdr = (t, align = AlignmentType.LEFT) => new TableCell({
+      borders: cbs, shading: { fill: TEAL, type: ShadingType.CLEAR }, margins: cm,
+      children: [new Paragraph({ alignment: align, children: [new TextRun({ text: t, bold: true, font: 'Aptos', size: 18, color: 'FFFFFF' })] })]
+    })
+
+    const oligoTable = new Table({
+      width: { size: CW, type: WidthType.DXA }, columnWidths: COLS,
+      rows: [
+        new TableRow({ tableHeader: true, children: [
+          hdr('#', AlignmentType.CENTER), hdr('Name'), hdr('Sequence'),
+          hdr('Len', AlignmentType.RIGHT), hdr('Scale', AlignmentType.RIGHT),
+          hdr('Purification'), hdr('Price', AlignmentType.RIGHT),
+        ]}),
+        ...lines.map((l, i) => {
+          const bg   = i % 2 === 1 ? LIGHT_GRAY : 'FFFFFF'
+          const len  = (l.sequence_text || '').replace(/[^A-Za-z]/g, '').length
+          const seq  = l.sequence_text && l.sequence_text.length > 22
+            ? l.sequence_text.slice(0, 21) + '…' : (l.sequence_text || '')
+          return new TableRow({ children: [
+            tc(i + 1, { align: AlignmentType.CENTER, color: MID_GRAY, sz: 18, bg }),
+            tc(l.oligo_name || '', { sz: 18, bg }),
+            tc(seq, { mono: true, sz: 16, color: '007a6a', bg }),
+            tc(len,  { align: AlignmentType.RIGHT, sz: 18, bg }),
+            tc(l.scale_nmol ? `${l.scale_nmol} nmol` : '—', { align: AlignmentType.RIGHT, sz: 18, bg }),
+            tc(l.purification, { sz: 18, bg }),
+            tc(fmtN(lp(l)), { align: AlignmentType.RIGHT, mono: true, sz: 18, bg }),
+          ]})
+        }),
+      ]
+    })
+
+    // ── 6. Summary ──
+    function sRow(label, value, opts = {}) {
+      const topB = opts.topBorder ? { style: BorderStyle.SINGLE, size: 4, color: BORDER_COL } : nb
+      const topBs = { top: topB, bottom: nb, left: nb, right: nb }
+      return new TableRow({ children: [
+        new TableCell({ borders: nbs, width: { size: CW - 2600, type: WidthType.DXA }, children: [new Paragraph({ children: [] })] }),
+        new TableCell({ borders: topBs, width: { size: 1300, type: WidthType.DXA }, margins: { top: 55, bottom: 55, left: 0, right: 120 },
+          children: [new Paragraph({ children: [new TextRun({ text: label, font: 'Aptos', bold: opts.bold, size: opts.sz || 20, color: opts.color || MID_GRAY })] })] }),
+        new TableCell({ borders: topBs, width: { size: 1300, type: WidthType.DXA }, margins: { top: 55, bottom: 55, left: 0, right: 0 },
+          children: [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun({ text: value, font: 'Courier New', bold: opts.bold, size: opts.sz || 20, color: opts.color || '1a1d2e' })] })] }),
+      ]})
+    }
+
+    const sumRows = [sRow('Subtotal', fmtN(subtotal))]
+    if (disc > 0) sumRows.push(sRow('Discount', `− ${fmtN(disc)}`, { color: 'd93a51' }))
+    sumRows.push(sRow('Net', fmtN(net)))
+    sumRows.push(sRow(`VAT (${(VAT_RATE * 100).toFixed(0)}%)`, fmtN(vat)))
+    sumRows.push(sRow('Total', fmtN(total), { bold: true, sz: 24, color: TEAL, topBorder: true }))
+
+    const summaryTable = new Table({
+      width: { size: CW, type: WidthType.DXA }, columnWidths: [CW - 2600, 1300, 1300],
+      borders: nbs, rows: sumRows
+    })
+
+    // ── 7. Notes + footer ──
+    const notesChildren = q.notes
+      ? [new Paragraph({ spacing: { before: 240, after: 80 }, children: [new TextRun({ text: `Notes: ${q.notes}`, font: 'Aptos', size: 20, color: MID_GRAY, italics: true })] })]
+      : []
+
+    const footer = [
+      new Paragraph({
+        spacing: { before: 320, after: 80 },
+        border: { top: { style: BorderStyle.SINGLE, size: 6, color: TEAL, space: 6 } },
+        children: [new TextRun({ text: 'Prices do not include VAT.  |  המחיר לא כולל מע"מ.', font: 'Aptos', size: 18, color: MID_GRAY })]
+      }),
+      new Paragraph({
+        spacing: { before: 60, after: 60 },
+        children: [new TextRun({ text: 'Please confirm to proceed. Thank you!  |  נשמח על אישורך להמשך טיפול. תודה, אוליגו ביוטק', font: 'Aptos', size: 18, color: MID_GRAY })]
+      }),
+    ]
+
+    // ── Assemble ──
+    const doc = new Document({
+      sections: [{
+        properties: { page: { size: { width: 11906, height: 16838 }, margin: { top: 1440, right: 1440, bottom: 1440, left: 1440 } } },
+        children: [
+          headerTable, divider, titlePara,
+          metaTable,
+          new Paragraph({ spacing: { before: 280, after: 120 }, children: [] }),
+          oligoTable,
+          new Paragraph({ spacing: { before: 80, after: 0 }, children: [] }),
+          summaryTable,
+          ...notesChildren,
+          ...footer,
+        ]
+      }]
+    })
+
+    const buf  = await Packer.toBuffer(doc)
+    const name = `Quote-Q${q.id}${q.customer_ref ? `-Order${q.customer_ref}` : ''}.docx`
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+    res.setHeader('Content-Disposition', `attachment; filename="${name}"`)
+    res.send(buf)
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => console.log(`Oligo backend running on http://localhost:${PORT}`))

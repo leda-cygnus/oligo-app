@@ -1,6 +1,6 @@
 # Oligo App
 
-Internal lab management system for oligo synthesis operations at company XYZ
+Internal lab management system for oligo synthesis operations.
 
 ## What it does
 
