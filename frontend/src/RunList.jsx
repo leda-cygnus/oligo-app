@@ -204,6 +204,7 @@ function RunDetail({ api, runId, onBack }) {
   const [modLotIds, setModLotIds]       = useState({})
   const [saving, setSaving]       = useState(false)
   const [saveMsg, setSaveMsg]     = useState('')
+  const [conjForm, setConjForm]   = useState({})  // canonical_name → { reagent_lot, date_conjugated, operator, notes }
 
   // results
   const [results, setResults]               = useState({})
@@ -239,7 +240,10 @@ function RunDetail({ api, runId, onBack }) {
         const rInit = {}
         REAGENTS.forEach(r => { rInit[r.key] = { ...EMPTY_R } })
         for (const mm of (detail.mod_map || []))
-          rInit[`mod_${mm.canonical_name}`] = { ...EMPTY_R }
+          if (mm.delivery_method !== 'nhs_ester')
+            rInit[`mod_${mm.canonical_name}`] = { ...EMPTY_R }
+        if ((detail.mod_map || []).some(mm => mm.delivery_method === 'nhs_ester'))
+          rInit['ammc6'] = { ...EMPTY_R }
         for (const row of reagentData.reagents) {
           if (rInit[row.reagent_type] !== undefined) rInit[row.reagent_type] = {
             material_lot_id: row.material_lot_id || null,
@@ -247,6 +251,13 @@ function RunDetail({ api, runId, onBack }) {
             date_replaced: row.date_replaced || '', replaced_by: row.replaced_by || '',
           }
         }
+        // Seed conjugation form
+        setConjForm(Object.fromEntries(
+          ((reagentData.conjugation || [])).map(c => [c.modification_name, {
+            reagent_lot: c.reagent_lot || '', date_conjugated: c.date_conjugated || '',
+            operator: c.operator || '', notes: c.notes || '',
+          }])
+        ))
         // Also seed modLotIds for mod_map MW lookup
         const mli = {}
         for (const mm of (detail.mod_map || []))
@@ -273,14 +284,25 @@ function RunDetail({ api, runId, onBack }) {
   async function saveReagents() {
     setSaving(true); setSaveMsg('')
     try {
-      const specials = (data?.mod_map || []).map(mm => ({
-        reagent_type: `mod_${mm.canonical_name}`,
-        material_lot_id: rForm[`mod_${mm.canonical_name}`]?.material_lot_id || null,
-        lot_number: rForm[`mod_${mm.canonical_name}`]?.lot_number || null,
-        solvent_lot: rForm[`mod_${mm.canonical_name}`]?.solvent_lot || null,
-        date_replaced: rForm[`mod_${mm.canonical_name}`]?.date_replaced || null,
-        replaced_by: rForm[`mod_${mm.canonical_name}`]?.replaced_by || null,
-      }))
+      const nhsMods  = (data?.mod_map || []).filter(mm => mm.delivery_method === 'nhs_ester')
+      const specials = (data?.mod_map || [])
+        .filter(mm => mm.delivery_method !== 'nhs_ester')
+        .map(mm => ({
+          reagent_type: `mod_${mm.canonical_name}`,
+          material_lot_id: rForm[`mod_${mm.canonical_name}`]?.material_lot_id || null,
+          lot_number: rForm[`mod_${mm.canonical_name}`]?.lot_number || null,
+          solvent_lot: rForm[`mod_${mm.canonical_name}`]?.solvent_lot || null,
+          date_replaced: rForm[`mod_${mm.canonical_name}`]?.date_replaced || null,
+          replaced_by: rForm[`mod_${mm.canonical_name}`]?.replaced_by || null,
+        }))
+      if (nhsMods.length > 0) specials.push({
+        reagent_type: 'ammc6',
+        material_lot_id: rForm['ammc6']?.material_lot_id || null,
+        lot_number: rForm['ammc6']?.lot_number || null,
+        solvent_lot: rForm['ammc6']?.solvent_lot || null,
+        date_replaced: rForm['ammc6']?.date_replaced || null,
+        replaced_by: rForm['ammc6']?.replaced_by || null,
+      })
       const reagents = [
         ...REAGENTS.map(r => ({
           reagent_type: r.key,
@@ -292,6 +314,13 @@ function RunDetail({ api, runId, onBack }) {
         })),
         ...specials,
       ]
+      const conjugation = nhsMods.map(mm => ({
+        modification_name: mm.canonical_name,
+        reagent_lot:     conjForm[mm.canonical_name]?.reagent_lot     || null,
+        date_conjugated: conjForm[mm.canonical_name]?.date_conjugated || null,
+        operator:        conjForm[mm.canonical_name]?.operator        || null,
+        notes:           conjForm[mm.canonical_name]?.notes           || null,
+      }))
       const cpg = lines.map(l => ({
         plate_position: l.plate_position,
         material_lot_id: cpgForm[l.plate_position]?.material_lot_id || null,
@@ -300,7 +329,7 @@ function RunDetail({ api, runId, onBack }) {
       const mod_lots = (data?.mod_map || [])
         .filter(mm => rForm[`mod_${mm.canonical_name}`]?.material_lot_id)
         .map(mm => ({ canonical_name: mm.canonical_name, material_lot_id: rForm[`mod_${mm.canonical_name}`].material_lot_id }))
-      await api.put(`/runs/${runId}/reagents`, { reagents, cpg, mod_lots })
+      await api.put(`/runs/${runId}/reagents`, { reagents, cpg, mod_lots, conjugation })
       setSaveMsg('Saved')
       setCarryover(null)
       setRLocked(true)
@@ -546,23 +575,26 @@ function RunDetail({ api, runId, onBack }) {
           <>
             <table className="rl-rtable">
               <thead>
-                <tr><th>Reagent</th><th>Lot #</th><th>Solvent lot</th><th>Date replaced</th><th>Replaced by</th></tr>
+                <tr><th>Reagent</th><th>Lot #</th><th>Full name</th><th>Solvent lot</th><th>Date replaced</th><th>Replaced by</th></tr>
               </thead>
               <tbody>
                 {REAGENTS.map(r => {
                   const v = rForm[r.key] || EMPTY_R
+                  const fullName = materialLots.find(l => l.id === v.material_lot_id)?.name || '—'
                   return (
                     <tr key={r.key}>
                       <td className="rl-reagent-label">{r.label}</td>
                       <td className="mono">{v.lot_number || '—'}</td>
+                      <td>{fullName}</td>
                       <td className="mono">{r.amidite ? (v.solvent_lot || '—') : <span className="rl-na">—</span>}</td>
                       <td className="mono">{v.date_replaced || '—'}</td>
                       <td>{v.replaced_by || '—'}</td>
                     </tr>
                   )
                 })}
-                {(data?.mod_map || []).map(mm => {
+                {(data?.mod_map || []).filter(mm => mm.delivery_method !== 'nhs_ester').map(mm => {
                   const v = rForm[`mod_${mm.canonical_name}`] || EMPTY_R
+                  const fullName = materialLots.find(l => l.id === v.material_lot_id)?.name || '—'
                   return (
                     <tr key={`mod_${mm.canonical_name}`}>
                       <td className="rl-reagent-label">
@@ -570,12 +602,31 @@ function RunDetail({ api, runId, onBack }) {
                         <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--text-dim)', fontFamily: 'var(--mono)' }}>pos {mm.synth_slot}</span>
                       </td>
                       <td className="mono">{v.lot_number || '—'}</td>
+                      <td>{fullName}</td>
                       <td className="mono">{v.solvent_lot || '—'}</td>
                       <td className="mono">{v.date_replaced || '—'}</td>
                       <td>{v.replaced_by || '—'}</td>
                     </tr>
                   )
                 })}
+                {(data?.mod_map || []).some(mm => mm.delivery_method === 'nhs_ester') && (() => {
+                  const v = rForm['ammc6'] || EMPTY_R
+                  const fullName = materialLots.find(l => l.id === v.material_lot_id)?.name || '—'
+                  const nhsSlots = (data?.mod_map || []).filter(mm => mm.delivery_method === 'nhs_ester').map(mm => mm.synth_slot).join(', ')
+                  return (
+                    <tr key="ammc6">
+                      <td className="rl-reagent-label">
+                        AmMC6
+                        <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--text-dim)', fontFamily: 'var(--mono)' }}>pos {nhsSlots}</span>
+                      </td>
+                      <td className="mono">{v.lot_number || '—'}</td>
+                      <td>{fullName}</td>
+                      <td className="mono">{v.solvent_lot || '—'}</td>
+                      <td className="mono">{v.date_replaced || '—'}</td>
+                      <td>{v.replaced_by || '—'}</td>
+                    </tr>
+                  )
+                })()}
               </tbody>
             </table>
             {/* CPG read-only */}
@@ -634,13 +685,34 @@ function RunDetail({ api, runId, onBack }) {
                 </div>
               )}
             </div>
+            {(data?.mod_map || []).some(mm => mm.delivery_method === 'nhs_ester') && (
+              <>
+                <div className="rl-section-hdr" style={{ borderTop: '1px solid var(--border)', borderBottom: 'none' }}>
+                  <h3>NHS Ester Conjugation</h3>
+                </div>
+                <table className="rl-rtable" style={{ margin: '0 14px 14px' }}>
+                  <thead><tr><th>Modification</th><th>NHS ester lot</th><th>Date conjugated</th><th>Operator</th><th>Notes</th></tr></thead>
+                  <tbody>
+                    {(data?.mod_map || []).filter(mm => mm.delivery_method === 'nhs_ester').map(mm => (
+                      <tr key={mm.canonical_name}>
+                        <td className="rl-reagent-label">{mm.canonical_name}</td>
+                        <td className="mono">{conjForm[mm.canonical_name]?.reagent_lot || '—'}</td>
+                        <td className="mono">{conjForm[mm.canonical_name]?.date_conjugated || '—'}</td>
+                        <td>{conjForm[mm.canonical_name]?.operator || '—'}</td>
+                        <td>{conjForm[mm.canonical_name]?.notes || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
+            )}
           </>
         ) : (
           /* ── editable form ── */
           <>
             <table className="rl-rtable">
               <thead>
-                <tr><th>Reagent</th><th>Lot #</th><th>Solvent lot</th><th>Date replaced</th><th>Replaced by</th></tr>
+                <tr><th>Reagent</th><th>Lot #</th><th>Full name</th><th>Solvent lot</th><th>Date replaced</th><th>Replaced by</th></tr>
               </thead>
               <tbody>
                 {REAGENTS.map(r => {
@@ -649,6 +721,7 @@ function RunDetail({ api, runId, onBack }) {
                   const available = materialLots.filter(l =>
                     l.material_type === (r.amidite ? 'amidite' : 'reagent') && l.canonical_name === cn
                   )
+                  const fullName = materialLots.find(l => l.id === v.material_lot_id)?.name || ''
                   return (
                     <tr key={r.key}>
                       <td className="rl-reagent-label">{r.label}</td>
@@ -669,6 +742,7 @@ function RunDetail({ api, runId, onBack }) {
                           ))}
                         </select>
                       </td>
+                      <td style={{ fontSize: 12, color: 'var(--text-dim)' }}>{fullName || <span className="rl-na">—</span>}</td>
                       <td>{r.amidite
                         ? <input className="rl-input" value={v.solvent_lot} onChange={e => setR(r.key, 'solvent_lot', e.target.value)} />
                         : <span className="rl-na">—</span>}
@@ -678,10 +752,11 @@ function RunDetail({ api, runId, onBack }) {
                     </tr>
                   )
                 })}
-                {(data?.mod_map || []).map(mm => {
+                {(data?.mod_map || []).filter(mm => mm.delivery_method !== 'nhs_ester').map(mm => {
                   const key  = `mod_${mm.canonical_name}`
                   const v    = rForm[key] || EMPTY_R
                   const avail = materialLots.filter(l => l.material_type === 'amidite' && l.canonical_name === mm.canonical_name)
+                  const fullName = materialLots.find(l => l.id === v.material_lot_id)?.name || ''
                   return (
                     <tr key={key}>
                       <td className="rl-reagent-label">
@@ -703,12 +778,46 @@ function RunDetail({ api, runId, onBack }) {
                           ))}
                         </select>
                       </td>
+                      <td style={{ fontSize: 12, color: 'var(--text-dim)' }}>{fullName || <span className="rl-na">—</span>}</td>
                       <td><input className="rl-input" value={v.solvent_lot} onChange={e => setR(key, 'solvent_lot', e.target.value)} /></td>
                       <td><input type="date" className="rl-input rl-date" value={v.date_replaced} onChange={e => setR(key, 'date_replaced', e.target.value)} /></td>
                       <td><input className="rl-input" value={v.replaced_by} onChange={e => setR(key, 'replaced_by', e.target.value)} /></td>
                     </tr>
                   )
                 })}
+                {(data?.mod_map || []).some(mm => mm.delivery_method === 'nhs_ester') && (() => {
+                  const v = rForm['ammc6'] || EMPTY_R
+                  const avail = materialLots.filter(l => l.material_type === 'amidite' && l.canonical_name === 'AmMC6')
+                  const fullName = materialLots.find(l => l.id === v.material_lot_id)?.name || ''
+                  const nhsSlots = (data?.mod_map || []).filter(mm => mm.delivery_method === 'nhs_ester').map(mm => mm.synth_slot).join(', ')
+                  return (
+                    <tr key="ammc6">
+                      <td className="rl-reagent-label">
+                        AmMC6
+                        <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--text-dim)', fontFamily: 'var(--mono)' }}>pos {nhsSlots}</span>
+                      </td>
+                      <td>
+                        <select className="rl-input rl-select"
+                                value={v.material_lot_id ?? ''}
+                                onChange={e => {
+                                  const id = e.target.value ? parseInt(e.target.value) : null
+                                  const lot = materialLots.find(l => l.id === id)
+                                  setR('ammc6', 'material_lot_id', id)
+                                  if (lot) setR('ammc6', 'lot_number', lot.lot_number)
+                                }}>
+                          <option value="">— select lot —</option>
+                          {avail.map(l => (
+                            <option key={l.id} value={l.id}>{l.lot_number}{l.provider ? ` (${l.provider})` : ''}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td style={{ fontSize: 12, color: 'var(--text-dim)' }}>{fullName || <span className="rl-na">—</span>}</td>
+                      <td><input className="rl-input" value={v.solvent_lot} onChange={e => setR('ammc6', 'solvent_lot', e.target.value)} /></td>
+                      <td><input type="date" className="rl-input rl-date" value={v.date_replaced} onChange={e => setR('ammc6', 'date_replaced', e.target.value)} /></td>
+                      <td><input className="rl-input" value={v.replaced_by} onChange={e => setR('ammc6', 'replaced_by', e.target.value)} /></td>
+                    </tr>
+                  )
+                })()}
               </tbody>
             </table>
             {/* CPG editable */}
@@ -784,6 +893,42 @@ function RunDetail({ api, runId, onBack }) {
                 )
               })()}
             </div>
+            {(data?.mod_map || []).some(mm => mm.delivery_method === 'nhs_ester') && (
+              <>
+                <div className="rl-section-hdr" style={{ borderTop: '1px solid var(--border)', borderBottom: 'none' }}>
+                  <h3>NHS Ester Conjugation</h3>
+                </div>
+                <div style={{ padding: '0 14px 14px' }}>
+                  <table className="rl-rtable">
+                    <thead>
+                      <tr><th>Modification</th><th>NHS ester lot</th><th>Date conjugated</th><th>Operator</th><th>Notes</th></tr>
+                    </thead>
+                    <tbody>
+                      {(data?.mod_map || []).filter(mm => mm.delivery_method === 'nhs_ester').map(mm => {
+                        const n = mm.canonical_name
+                        return (
+                          <tr key={n}>
+                            <td className="rl-reagent-label">{n}</td>
+                            <td><input className="rl-input" placeholder="lot #"
+                                       value={conjForm[n]?.reagent_lot ?? ''}
+                                       onChange={e => setConjForm(f => ({ ...f, [n]: { ...f[n], reagent_lot: e.target.value } }))} /></td>
+                            <td><input type="date" className="rl-input rl-date"
+                                       value={conjForm[n]?.date_conjugated ?? ''}
+                                       onChange={e => setConjForm(f => ({ ...f, [n]: { ...f[n], date_conjugated: e.target.value } }))} /></td>
+                            <td><input className="rl-input"
+                                       value={conjForm[n]?.operator ?? ''}
+                                       onChange={e => setConjForm(f => ({ ...f, [n]: { ...f[n], operator: e.target.value } }))} /></td>
+                            <td><input className="rl-input"
+                                       value={conjForm[n]?.notes ?? ''}
+                                       onChange={e => setConjForm(f => ({ ...f, [n]: { ...f[n], notes: e.target.value } }))} /></td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
           </>
         )}
       </div>
@@ -1011,11 +1156,11 @@ function RunDetail({ api, runId, onBack }) {
 }
 
 // ── RunList ───────────────────────────────────────────────────────────────────
-export default function RunList({ api }) {
+export default function RunList({ api, initialRunId }) {
   const [runs, setRuns]       = useState([])
   const [loading, setLoading] = useState(true)
   const [err, setErr]         = useState('')
-  const [openId, setOpenId]   = useState(null)
+  const [openId, setOpenId]   = useState(initialRunId ?? null)
 
   const [menuOpen, setMenuOpen]       = useState(null)
   const menuRef                       = useRef()

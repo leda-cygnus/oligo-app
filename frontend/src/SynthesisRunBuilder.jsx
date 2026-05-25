@@ -174,22 +174,30 @@ function parseNotes(notes) {
 
 // ── CSV generation ────────────────────────────────────────────────────────────
 
-// Replace /5Name/ /iName/ /3Name/ (and aliases) with the assigned position number
-function applyModPositions(seq, modPositions, modCatalog) {
+// Replace /5Name/ /iName/ /3Name/ (and aliases) with assigned slot or AmMC6 (NHS ester route)
+function applyModPositions(seq, modPositions, modCatalog, modDelivery) {
   let result = seq
   for (const [canonicalName, pos] of Object.entries(modPositions)) {
-    if (pos == null) continue
+    const delivery = modDelivery?.[canonicalName] ?? 'amidite'
+    if (delivery === 'amidite' && pos == null) continue
     const mod  = modCatalog.find(m => m.canonical_name === canonicalName)
     const names = [canonicalName, ...(mod?.aliases ? String(mod.aliases).split(',').map(a => a.trim()).filter(Boolean) : [])]
     for (const name of names) {
       const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-      result = result.replace(new RegExp(`\\/[5i3]?${esc}\\/`, 'g'), String(pos))
+      if (delivery === 'nhs_ester') {
+        if (pos == null) continue
+        result = result.replace(new RegExp(`\\/5${esc}\\/`, 'g'), String(pos))
+        result = result.replace(new RegExp(`\\/3${esc}\\/`, 'g'), String(pos))
+        // internal positions not yet supported for NHS ester — left unchanged
+      } else {
+        result = result.replace(new RegExp(`\\/[5i3]?${esc}\\/`, 'g'), String(pos))
+      }
     }
   }
   return result
 }
 
-function generateCsv(plate, dmtDefault, dmtOverrides, modPositions, modCatalog) {
+function generateCsv(plate, dmtDefault, dmtOverrides, modPositions, modCatalog, modDelivery) {
   const header = "Sequence 5' - 3',DMT ON or DMT OFF,Name,Secondary Name,Purification,Formulation,Order#,Contact,Institute,,,nt"
   // Column-major order: A1,B1…H1, A2,B2…H2, … A12…H12 — all 96 positions always emitted
   const positions = COLS.flatMap(c => ROWS.map(r => `${r}${c}`))
@@ -207,13 +215,41 @@ function generateCsv(plate, dmtDefault, dmtOverrides, modPositions, modCatalog) 
       return `,${dmt},,${idx + 1}-${pos},,,,,,,,`
     }
     const rawSeq = (item.annotated_sequence || item.tokens?.bases || '').replace(/\s/g, '')
-    const seq    = applyModPositions(rawSeq, modPositions, modCatalog)
+    const seq    = applyModPositions(rawSeq, modPositions, modCatalog, modDelivery)
     const nt     = item.length_nt ?? (rawSeq.replace(/[^A-Za-z]/g, '').length || '')
     return [
       esc(seq), dmt, esc(item.name), esc(`${idx + 1}-${pos}`),
       esc(item.purification || 'Desalted'), esc(item.formulation || 'Dry'),
       esc(item.order_ref), esc(item.customer_name), esc(item.institute || ''),
       '', '', String(nt),
+    ].join(',')
+  })
+
+  return [header, ...rows].join('\n')
+}
+
+// Build CSV from server-saved run lines (uses synth_sequence already stored in DB)
+function generateCsvFromRunLines(lines) {
+  const header = "Sequence 5' - 3',DMT ON or DMT OFF,Name,Secondary Name,Purification,Formulation,Order#,Contact,Institute,,,nt"
+  const positions = COLS.flatMap(c => ROWS.map(r => `${r}${c}`))
+  const posMap = Object.fromEntries(lines.map(l => [l.plate_position, l]))
+
+  const esc = v => {
+    const s = String(v ?? '')
+    return s.includes(',') || s.includes('"') ? `"${s.replace(/"/g, '""')}"` : s
+  }
+
+  const rows = positions.map((pos, idx) => {
+    const line = posMap[pos]
+    const dmt = line?.dmt || 'DMT OFF'
+    if (!line) return `,${dmt},,${idx + 1}-${pos},,,,,,,,`
+    const seq = (line.synth_sequence || line.annotated_sequence || '').replace(/\s/g, '')
+    const { purification, formulation } = parseNotes(line.notes)
+    return [
+      esc(seq), dmt, esc(line.oligo_name), esc(`${idx + 1}-${pos}`),
+      esc(purification), esc(formulation),
+      esc(line.order_ref), esc(line.customer_name), esc(line.institute || ''),
+      '', '', String(line.length_nt || ''),
     ].join(',')
   })
 
@@ -233,7 +269,7 @@ function downloadCsv(content, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 150)
 }
 
-export default function SynthesisRunBuilder({ api, onNavigateToRuns }) {
+export default function SynthesisRunBuilder({ api, onNavigateToRuns, onNavigateToRun }) {
   const [step, setStep]             = useState(1)
   const [runMeta, setRunMeta]       = useState({ synthesizer: 'Dr. Oligo BLP-XLC-5133', operator: '', notes: '', scale: 100 })
   const [orders, setOrders]         = useState([])
@@ -248,7 +284,8 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns }) {
   const [dmtOverrides, setDmtOverrides] = useState({})
   const [orderFilter, setOrderFilter]   = useState('')
   const [saving, setSaving]         = useState(false)
-  const [savedRun, setSavedRun]     = useState(null)   // { run_id, line_count }
+  const [savedRun, setSavedRun]         = useState(null)   // { run_id, line_count }
+  const [savedRunLines, setSavedRunLines] = useState([])    // lines from GET /runs/:id after save
   const [csvDone, setCsvDone]       = useState(false)
   const [startErr, setStartErr]     = useState('')
   const [saveErr, setSaveErr]       = useState('')
@@ -266,6 +303,10 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns }) {
   const [rSaveMsg, setRSaveMsg]     = useState('')
   const [rLocked, setRLocked]       = useState(false)
   const [modPositions, setModPositions] = useState({})   // canonical_name → 1..8
+  const [modDelivery, setModDelivery]   = useState({})   // canonical_name → 'amidite' | 'nhs_ester'
+  const [nhsEsterMods, setNhsEsterMods] = useState([])   // canonical_names that used NHS ester in saved run
+  const [ammc6Form, setAmmc6Form]       = useState({ ...EMPTY_R })
+  const [conjForm, setConjForm]         = useState({})   // canonical_name → { reagent_lot, date_conjugated, operator, notes }
 
   useEffect(() => {
     Promise.all([api.get('/orders'), api.get('/modifications'), api.get('/material-lots')])
@@ -375,7 +416,7 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns }) {
     return [...names].sort()
   }, [plate.wellMap])
 
-  // Seed modPositions from allModNames; auto-assign sequential positions, keep user choices
+  // Seed modPositions and modDelivery from allModNames; keep user choices
   useEffect(() => {
     setModPositions(prev => {
       const next = {}
@@ -384,9 +425,24 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns }) {
       })
       return next
     })
+    setModDelivery(prev => {
+      const next = {}
+      allModNames.forEach(name => { next[name] = prev[name] ?? 'amidite' })
+      return next
+    })
   }, [allModNames.join(',')])
 
   const overCapacity = plate.totalUsed > CAPACITY
+
+  // Mods selected as NHS ester that also appear at internal positions in the current plate
+  const nhsInternalWarnings = useMemo(() => {
+    const warned = new Set()
+    for (const well of Object.values(plate.wellMap))
+      for (const mod of well.item?.tokens?.modifications ?? [])
+        if (modDelivery[mod.canonical_name] === 'nhs_ester' && mod.position_type === 'internal')
+          warned.add(mod.canonical_name)
+    return warned
+  }, [plate.wellMap, modDelivery])
 
   // ── save + CSV ────────────────────────────────────────────────────────────
 
@@ -402,7 +458,8 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns }) {
         .filter(([, pos]) => pos != null)
         .map(([canonical_name, synth_slot]) => {
           const mod = modCatalog.find(m => m.canonical_name === canonical_name)
-          return mod ? { modification_id: mod.id, synth_slot } : null
+          const delivery_method = modDelivery[canonical_name] ?? 'amidite'
+          return mod ? { modification_id: mod.id, synth_slot, delivery_method } : null
         }).filter(Boolean)
       result = await api.post('/runs', { ...runMeta, scale_nmol: runMeta.scale, lines, mod_map: modMap })
     } catch (err) {
@@ -412,19 +469,35 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns }) {
     }
     setSavedRun(result)
 
-    // ── Step 2: generate & download CSV (non-fatal if it fails) ────────────
-    setCsvErr('')
+    // ── Step 2: fetch saved run lines, generate & download CSV ─────────────
+    let runDetail = null
     try {
-      const csv = generateCsv(plate, dmtDefault, dmtOverrides, modPositions, modCatalog)
+      runDetail = await api.get(`/runs/${result.run_id}`)
+      const csv = generateCsvFromRunLines(runDetail.lines ?? [])
       const today = new Date().toISOString().slice(0, 10).replace(/-/g, '')
       downloadCsv(csv, `RUN ${result.run_id} ${today} ${runMeta.scale}nm.csv`)
     } catch (e) {
       console.error('CSV generation error:', e)
-      setCsvErr('CSV generation failed: ' + (e.message || String(e)))
+      // Non-fatal when navigating: run was saved; user can re-download from RunDetail
+      if (!onNavigateToRun) setCsvErr('CSV generation failed: ' + (e.message || String(e)))
+    }
+
+    setSaving(false)
+
+    // ── Navigate to RunDetail (preferred) ──────────────────────────────────
+    if (onNavigateToRun) {
+      onNavigateToRun(result.run_id)
+      return
+    }
+
+    // ── Fallback: show inline reagent form (when no navigation handler) ────
+    if (runDetail) {
+      const nhs = (runDetail.mod_map ?? []).filter(m => m.delivery_method === 'nhs_ester').map(m => m.canonical_name)
+      setNhsEsterMods(nhs)
+      setSavedRunLines(runDetail.lines ?? [])
+      setConjForm(Object.fromEntries(nhs.map(n => [n, { reagent_lot: '', date_conjugated: '', operator: '', notes: '' }])))
     }
     setCsvDone(true)
-
-    // ── Step 3: load carryover reagents for the inline form (non-fatal) ────
     try {
       const rd = await api.get(`/runs/${result.run_id}/reagents`)
       const rInit = initRForm()
@@ -436,7 +509,6 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns }) {
         }
       }
       setRForm(rInit)
-      // Seed cpgForm keyed by column number (1-12), aggregated from per-well plate_position rows
       const cf = initCpgForm()
       for (const row of rd.cpg) {
         const colNum = parseInt((row.plate_position || '').slice(1))
@@ -445,11 +517,21 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns }) {
         }
       }
       setCpgForm(cf)
+      const ammc6Row = rd.reagents.find(r => r.reagent_type === 'ammc6')
+      if (ammc6Row) setAmmc6Form({
+        material_lot_id: ammc6Row.material_lot_id || null,
+        lot_number: ammc6Row.lot_number || '', solvent_lot: ammc6Row.solvent_lot || '',
+        date_replaced: ammc6Row.date_replaced || '', replaced_by: ammc6Row.replaced_by || '',
+      })
+      if (rd.conjugation?.length) setConjForm(
+        Object.fromEntries(rd.conjugation.map(c => [c.modification_name, {
+          reagent_lot: c.reagent_lot || '', date_conjugated: c.date_conjugated || '',
+          operator: c.operator || '', notes: c.notes || '',
+        }]))
+      )
       setCarryover(rd.carryover_from)
       setRLocked(rd.reagents.length > 0 && rd.carryover_from === null)
     } catch { /* non-fatal */ }
-
-    setSaving(false)
   }
 
   async function markRunStarted() {
@@ -465,7 +547,7 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns }) {
   function regenerateCsv() {
     setCsvErr('')
     try {
-      const csv = generateCsv(plate, dmtDefault, dmtOverrides, modPositions, modCatalog)
+      const csv = generateCsvFromRunLines(savedRunLines)
       const today = new Date().toISOString().slice(0, 10).replace(/-/g, '')
       downloadCsv(csv, `RUN ${savedRun.run_id} ${today} ${runMeta.scale}nm.csv`)
     } catch (e) {
@@ -503,7 +585,24 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns }) {
       const mod_lots = Object.entries(modLotIds)
         .filter(([, id]) => id != null)
         .map(([canonical_name, material_lot_id]) => ({ canonical_name, material_lot_id }))
-      await api.put(`/runs/${savedRun.run_id}/reagents`, { reagents, cpg, mod_lots })
+      if (nhsEsterMods.length > 0) {
+        reagents.push({
+          reagent_type: 'ammc6',
+          material_lot_id: ammc6Form.material_lot_id || null,
+          lot_number: ammc6Form.lot_number || null,
+          solvent_lot: ammc6Form.solvent_lot || null,
+          date_replaced: ammc6Form.date_replaced || null,
+          replaced_by: ammc6Form.replaced_by || null,
+        })
+      }
+      const conjugation = nhsEsterMods.map(n => ({
+        modification_name: n,
+        reagent_lot:       conjForm[n]?.reagent_lot       || null,
+        date_conjugated:   conjForm[n]?.date_conjugated   || null,
+        operator:          conjForm[n]?.operator          || null,
+        notes:             conjForm[n]?.notes             || null,
+      }))
+      await api.put(`/runs/${savedRun.run_id}/reagents`, { reagents, cpg, mod_lots, conjugation })
       setRSaveMsg('Saved')
       setCarryover(null)
       setRLocked(true)
@@ -512,7 +611,9 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns }) {
     finally { setRSaving(false) }
   }
 
-  const reagentsReady = REAGENTS.every(r => rForm[r.key]?.material_lot_id != null)
+  const ammc6Ready    = nhsEsterMods.length === 0 || ammc6Form.material_lot_id != null
+  const conjReady     = nhsEsterMods.length === 0 || nhsEsterMods.every(n => conjForm[n]?.reagent_lot)
+  const reagentsReady = REAGENTS.every(r => rForm[r.key]?.material_lot_id != null) && ammc6Ready && conjReady
   // Only require CPG for columns that actually contain sequences
   const activeCpgCols = [...new Set(
     Object.values(plate.wellMap).filter(w => w.item).map(w => parseInt(w.pos.slice(1)))
@@ -573,7 +674,7 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns }) {
               <span style={{ fontSize: 12, color: 'var(--text-dim)' }}>Fill reagents &amp; CPG below first</span>
             )}
             <button className="btn-ghost" onClick={regenerateCsv}>↓ Re-download CSV</button>
-            <button className="btn-ghost" onClick={() => { setSavedRun(null); setCsvDone(false); setSelection({}); setStep(1) }}>
+            <button className="btn-ghost" onClick={() => { setSavedRun(null); setSavedRunLines([]); setCsvDone(false); setSelection({}); setNhsEsterMods([]); setAmmc6Form({ ...EMPTY_R }); setConjForm({}); setStep(1) }}>
               + Build another run
             </button>
           </div>
@@ -844,23 +945,46 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns }) {
               <h3 className="srb-specials-title">Assign Specials</h3>
               {allModNames.length > 8 && (
                 <div className="srb-specials-warning">
-                  ⚠ {allModNames.length} modifications detected — only 8 machine positions available.
+                  ⚠ {allModNames.length} modifications — only 8 machine positions available.
                 </div>
               )}
-              {allModNames.map(name => (
-                <div key={name} className="srb-special-row">
-                  <span className="srb-special-name">{name}</span>
-                  <div className="srb-special-list">
-                    {[1,2,3,4,5,6,7,8].map(n => (
-                      <div key={n}
-                           className={`srb-special-item${modPositions[name] === n ? ' srb-special-item-active' : ''}`}
-                           onClick={() => setModPositions(p => ({ ...p, [name]: n }))}>
-                        {n}
+              {allModNames.map(name => {
+                const delivery = modDelivery[name] ?? 'amidite'
+                return (
+                  <div key={name} className="srb-special-row">
+                    <span className="srb-special-name">{name}</span>
+                    <div className="srb-special-delivery">
+                      <button
+                        className={`srb-opt-btn${delivery === 'amidite' ? ' active' : ''}`}
+                        onClick={() => setModDelivery(d => ({ ...d, [name]: 'amidite' }))}>
+                        Amidite
+                      </button>
+                      <button
+                        className={`srb-opt-btn${delivery === 'nhs_ester' ? ' active' : ''}`}
+                        onClick={() => setModDelivery(d => ({ ...d, [name]: 'nhs_ester' }))}>
+                        NHS Ester
+                      </button>
+                    </div>
+                    {delivery === 'nhs_ester' && (
+                      <div className="srb-nhs-label">
+                        → AmMC6 slot
+                        {nhsInternalWarnings.has(name) && (
+                          <span className="srb-nhs-warn"> ⚠ internal pos unchanged</span>
+                        )}
                       </div>
-                    ))}
+                    )}
+                    <div className="srb-special-list">
+                      {[1,2,3,4,5,6,7,8].map(n => (
+                        <div key={n}
+                             className={`srb-special-item${modPositions[name] === n ? ' srb-special-item-active' : ''}`}
+                             onClick={() => setModPositions(p => ({ ...p, [name]: n }))}>
+                          {n}
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
           </div>{/* end srb-plate-area */}
@@ -918,7 +1042,7 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns }) {
                       </div>
                     ))}
                   </div>
-                  {Object.keys(plate.slotFor).length > 0 && (
+                  {Object.keys(plate.slotFor).filter(cn => !nhsEsterMods.includes(cn)).length > 0 && (
                     <>
                       <div className="rl-section-hdr" style={{ borderTop: '1px solid var(--border)', borderBottom: 'none' }}>
                         <h3>Modification Lots</h3>
@@ -926,7 +1050,7 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns }) {
                       <table className="rl-rtable" style={{ margin: '0 14px 14px' }}>
                         <thead><tr><th>Modification</th><th>Lot #</th><th>Provider</th><th>MW addition (Da)</th></tr></thead>
                         <tbody>
-                          {Object.entries(plate.slotFor).map(([cn]) => {
+                          {Object.entries(plate.slotFor).filter(([cn]) => !nhsEsterMods.includes(cn)).map(([cn]) => {
                             const lot = materialLots.find(l => l.id === modLotIds[cn])
                             return (
                               <tr key={cn}>
@@ -937,6 +1061,41 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns }) {
                               </tr>
                             )
                           })}
+                        </tbody>
+                      </table>
+                    </>
+                  )}
+                  {nhsEsterMods.length > 0 && (
+                    <>
+                      <div className="rl-section-hdr" style={{ borderTop: '1px solid var(--border)', borderBottom: 'none' }}>
+                        <h3>AmMC6 (NHS Ester Amidite)</h3>
+                      </div>
+                      <table className="rl-rtable" style={{ margin: '0 14px 14px' }}>
+                        <thead><tr><th>Lot #</th><th>Solvent lot</th><th>Date replaced</th><th>Replaced by</th></tr></thead>
+                        <tbody>
+                          <tr>
+                            <td className="mono">{ammc6Form.lot_number || '—'}</td>
+                            <td className="mono">{ammc6Form.solvent_lot || '—'}</td>
+                            <td className="mono">{ammc6Form.date_replaced || '—'}</td>
+                            <td>{ammc6Form.replaced_by || '—'}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                      <div className="rl-section-hdr" style={{ borderTop: '1px solid var(--border)', borderBottom: 'none' }}>
+                        <h3>NHS Ester Conjugation</h3>
+                      </div>
+                      <table className="rl-rtable" style={{ margin: '0 14px 14px' }}>
+                        <thead><tr><th>Modification</th><th>NHS ester lot</th><th>Date conjugated</th><th>Operator</th><th>Notes</th></tr></thead>
+                        <tbody>
+                          {nhsEsterMods.map(n => (
+                            <tr key={n}>
+                              <td className="rl-reagent-label">{n}</td>
+                              <td className="mono">{conjForm[n]?.reagent_lot || '—'}</td>
+                              <td className="mono">{conjForm[n]?.date_conjugated || '—'}</td>
+                              <td>{conjForm[n]?.operator || '—'}</td>
+                              <td>{conjForm[n]?.notes || '—'}</td>
+                            </tr>
+                          ))}
                         </tbody>
                       </table>
                     </>
@@ -1030,7 +1189,7 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns }) {
                       )
                     })}
                   </div>
-                  {Object.keys(plate.slotFor).length > 0 && (
+                  {Object.keys(plate.slotFor).filter(cn => !nhsEsterMods.includes(cn)).length > 0 && (
                     <>
                       <div className="rl-section-hdr" style={{ borderTop: '1px solid var(--border)', borderBottom: 'none' }}>
                         <h3>Modification Lots</h3>
@@ -1039,7 +1198,7 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns }) {
                         <table className="rl-rtable">
                           <thead><tr><th>Modification</th><th>Lot</th></tr></thead>
                           <tbody>
-                            {Object.entries(plate.slotFor).map(([cn]) => {
+                            {Object.entries(plate.slotFor).filter(([cn]) => !nhsEsterMods.includes(cn)).map(([cn]) => {
                               const available = materialLots.filter(l =>
                                 l.material_type === 'amidite' && l.canonical_name === cn
                               )
@@ -1064,6 +1223,71 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns }) {
                                 </tr>
                               )
                             })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </>
+                  )}
+                  {nhsEsterMods.length > 0 && (
+                    <>
+                      <div className="rl-section-hdr" style={{ borderTop: '1px solid var(--border)', borderBottom: 'none' }}>
+                        <h3>AmMC6 (NHS Ester Amidite)</h3>
+                      </div>
+                      <table className="rl-rtable" style={{ margin: '0 14px 14px' }}>
+                        <thead>
+                          <tr><th>Lot #</th><th>Solvent lot</th><th>Date replaced</th><th>Replaced by</th></tr>
+                        </thead>
+                        <tbody>
+                          <tr>
+                            <td>
+                              <select className="rl-input rl-select"
+                                      value={ammc6Form.material_lot_id ?? ''}
+                                      onChange={e => {
+                                        const id = e.target.value ? parseInt(e.target.value) : null
+                                        const lot = materialLots.find(l => l.id === id)
+                                        setAmmc6Form(f => ({ ...f, material_lot_id: id, lot_number: lot?.lot_number ?? '' }))
+                                      }}>
+                                <option value="">— select lot —</option>
+                                {materialLots.filter(l => l.material_type === 'amidite' && l.canonical_name === 'AmMC6').map(l => (
+                                  <option key={l.id} value={l.id}>{l.lot_number}{l.provider ? ` (${l.provider})` : ''}</option>
+                                ))}
+                              </select>
+                            </td>
+                            <td><input className="rl-input" value={ammc6Form.solvent_lot}
+                                       onChange={e => setAmmc6Form(f => ({ ...f, solvent_lot: e.target.value }))} /></td>
+                            <td><input type="date" className="rl-input rl-date" value={ammc6Form.date_replaced}
+                                       onChange={e => setAmmc6Form(f => ({ ...f, date_replaced: e.target.value }))} /></td>
+                            <td><input className="rl-input" value={ammc6Form.replaced_by}
+                                       onChange={e => setAmmc6Form(f => ({ ...f, replaced_by: e.target.value }))} /></td>
+                          </tr>
+                        </tbody>
+                      </table>
+                      <div className="rl-section-hdr" style={{ borderTop: '1px solid var(--border)', borderBottom: 'none' }}>
+                        <h3>NHS Ester Conjugation</h3>
+                      </div>
+                      <div style={{ padding: '0 14px 14px' }}>
+                        <table className="rl-rtable">
+                          <thead>
+                            <tr><th>Modification</th><th>NHS ester lot</th><th>Date conjugated</th><th>Operator</th><th>Notes</th></tr>
+                          </thead>
+                          <tbody>
+                            {nhsEsterMods.map(n => (
+                              <tr key={n}>
+                                <td className="rl-reagent-label">{n}</td>
+                                <td><input className="rl-input" placeholder="lot #"
+                                           value={conjForm[n]?.reagent_lot ?? ''}
+                                           onChange={e => setConjForm(f => ({ ...f, [n]: { ...f[n], reagent_lot: e.target.value } }))} /></td>
+                                <td><input type="date" className="rl-input rl-date"
+                                           value={conjForm[n]?.date_conjugated ?? ''}
+                                           onChange={e => setConjForm(f => ({ ...f, [n]: { ...f[n], date_conjugated: e.target.value } }))} /></td>
+                                <td><input className="rl-input"
+                                           value={conjForm[n]?.operator ?? ''}
+                                           onChange={e => setConjForm(f => ({ ...f, [n]: { ...f[n], operator: e.target.value } }))} /></td>
+                                <td><input className="rl-input"
+                                           value={conjForm[n]?.notes ?? ''}
+                                           onChange={e => setConjForm(f => ({ ...f, [n]: { ...f[n], notes: e.target.value } }))} /></td>
+                              </tr>
+                            ))}
                           </tbody>
                         </table>
                       </div>

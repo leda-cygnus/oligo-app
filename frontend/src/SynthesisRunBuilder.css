@@ -179,7 +179,7 @@
 /* ── assign specials panel ── */
 .srb-specials-panel {
   flex-shrink: 0;
-  width: 160px;
+  width: 210px;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   padding: 14px 12px;
@@ -240,6 +240,29 @@
   background: var(--text);
   color: var(--bg);
   font-weight: 700;
+}
+
+.srb-special-delivery {
+  display: flex;
+  gap: 4px;
+}
+.srb-special-delivery .srb-opt-btn {
+  flex: 1;
+  padding: 4px 6px;
+  font-size: 11px;
+}
+
+.srb-nhs-label {
+  font-size: 12px;
+  font-family: var(--mono);
+  color: var(--accent);
+  padding: 4px 2px;
+}
+
+.srb-nhs-warn {
+  font-family: var(--font);
+  font-size: 11px;
+  color: #d97706;
 }
 
 .srb-legend-positions {

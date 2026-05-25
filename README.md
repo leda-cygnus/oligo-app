@@ -11,7 +11,8 @@ Internal lab management system for oligo synthesis operations.
 - Generate shipping label `.docx` documents
 - Create and manage sales quotes with per-oligo pricing, discounts, and VAT
 - Export quotes as formatted `.docx` documents
-- Manage modification catalog and material lots
+- Manage modification catalog and material lots (name, CAS number, lot tracking)
+- Track NHS ester modification delivery and post-synthesis conjugation info per run
 
 ## Stack
 
@@ -27,7 +28,7 @@ Internal lab management system for oligo synthesis operations.
 oligo-app/
 ├── backend/        # Express API server (server.js, idgen.js)
 ├── frontend/       # React app (Vite)
-└── db/             # SQL migration files (migrate_001.sql … migrate_019.sql)
+└── db/             # SQL migration files (migrate_001.sql … migrate_021.sql)
 ```
 
 ## Setup
@@ -44,7 +45,7 @@ Run all migrations in order against your PostgreSQL instance:
 ```bash
 psql -h localhost -U <user> -d oligosynth -f db/migrate_001.sql
 psql -h localhost -U <user> -d oligosynth -f db/migrate_002.sql
-# ... repeat through migrate_019.sql
+# ... repeat through migrate_021.sql
 ```
 
 ### Backend
@@ -115,6 +116,36 @@ ID generation lives in `backend/idgen.js`. Run the unit tests with:
 ```bash
 cd backend && node test-idgen.js
 ```
+
+## Material lots
+
+Each lot entry stores:
+
+| Field | Description |
+|---|---|
+| `canonical_name` | Linking key that matches the lot to reagent/amidite/CPG slots in a run |
+| `name` | Full vendor product name (display only, shown in Run Detail reagent table) |
+| `cas_number` | CAS registry number |
+| `catalogue_number` | Vendor catalogue number |
+| `lot_number` | Manufacturer lot number |
+| `manufacturer` / `vendor` | Source |
+| `mw` / `fw` | Molecular weight / formula weight (Da) |
+
+Multiple lots with different names or lot numbers can share the same `canonical_name`.
+
+## NHS ester modifications
+
+When building a synthesis run, each modification can be assigned a delivery method:
+
+- **Amidite** (default) — standard phosphoramidite coupling, assigned to a machine position (1–8)
+- **NHS ester** — post-synthesis conjugation via AmMC6 linker
+
+For NHS ester mods the Run Builder and Run Detail both show:
+
+- **AmMC6 reagent lot** — the C6-amino linker amidite used during synthesis
+- **Conjugation section** — one row per NHS ester mod with fields: NHS ester reagent lot, date conjugated, operator, notes
+
+Schema: `migrate_020.sql` adds `delivery_method` to `synthesis_run_mod_map` and creates the `synthesis_run_conjugation` table.
 
 ## Notes
 

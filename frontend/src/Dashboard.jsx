@@ -32,6 +32,7 @@ export default function Dashboard({ credentials, onLogout }) {
   const [quoteOrderId, setQuoteOrderId]       = useState(null)   // DB id
   const [quoteOrderRef, setQuoteOrderRef]     = useState(null)   // display ref
   const [quoteMode, setQuoteMode]             = useState(null)
+  const [targetRunId, setTargetRunId]         = useState(null)
   const api = makeApi(credentials)
 
   function navigateToOrder(orderId) {
@@ -44,6 +45,11 @@ export default function Dashboard({ credentials, onLogout }) {
     setTargetCustomer(customerId)
     setTargetOrder(null)
     setTab('orders')
+  }
+
+  function navigateToRun(runId) {
+    setTargetRunId(runId)
+    setTab('runslist')
   }
 
   function navigateToCreateQuote(order) {
@@ -63,6 +69,7 @@ export default function Dashboard({ credentials, onLogout }) {
   function handleTabClick(id) {
     if (id !== 'orders') { setTargetOrder(null); setTargetCustomer(null) }
     if (id !== 'quotes') { setQuoteOrderId(null); setQuoteOrderRef(null); setQuoteMode(null) }
+    setTargetRunId(null)   // clear so manual nav to Runs always opens the list
     setTab(id)
   }
 
@@ -96,8 +103,8 @@ export default function Dashboard({ credentials, onLogout }) {
         {tab === 'orders'    && <OrderList           api={api} initialOrderId={targetOrderId} initialCustomerId={targetCustomerId}
                                                      onCreateQuote={navigateToCreateQuote} onViewQuote={navigateToViewQuote} />}
         {tab === 'quotes'    && <Quotes              api={api} initialOrderId={quoteOrderId} initialOrderRef={quoteOrderRef} initialMode={quoteMode} />}
-        {tab === 'build'     && <SynthesisRunBuilder api={api} onNavigateToRuns={() => setTab('runslist')} />}
-        {tab === 'runslist'  && <RunList             api={api} />}
+        {tab === 'build'     && <SynthesisRunBuilder api={api} onNavigateToRuns={() => setTab('runslist')} onNavigateToRun={navigateToRun} />}
+        {tab === 'runslist'  && <RunList             api={api} initialRunId={targetRunId} />}
         {tab === 'customers' && <CustomerList        api={api} onNavigateToOrders={navigateToCustomerOrders} />}
         {tab === 'catalog'   && <ModificationCatalog api={api} />}
         {tab === 'materials' && <MaterialLots        api={api} />}

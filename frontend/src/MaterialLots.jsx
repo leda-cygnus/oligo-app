@@ -9,8 +9,12 @@ const TYPE_TABS = [
 
 const REAGENT_CANONICALS = ['wash', 'oxidizer', 'cap_a', 'cap_b', 'activator']
 
+// Standard base amidites (not in modification_catalog)
+const BASE_CANONICALS = ['dA', 'dC', 'dG', 'dT', 'rA', 'rC', 'rG', 'rU']
+
 const EMPTY_FORM = {
-  material_type: 'amidite', canonical_name: '', catalogue_number: '', lot_number: '',
+  material_type: 'amidite', canonical_name: '', name: '', cas_number: '',
+  catalogue_number: '', lot_number: '',
   manufacturer: '', vendor: '', mw: '', fw: '', received_date: '', expiry_date: '',
 }
 
@@ -23,6 +27,8 @@ function lotToForm(l) {
   return {
     material_type:    l.material_type    || 'amidite',
     canonical_name:   l.canonical_name   || '',
+    name:             l.name             || '',
+    cas_number:       l.cas_number       || '',
     catalogue_number: l.catalogue_number || '',
     lot_number:       l.lot_number       || '',
     manufacturer:     l.manufacturer     || '',
@@ -40,6 +46,8 @@ function buildBody(form) {
     mw:               form.mw ? parseFloat(form.mw) : null,
     fw:               form.fw ? parseFloat(form.fw) : null,
     canonical_name:   form.canonical_name.trim()   || null,
+    name:             form.name.trim()             || null,
+    cas_number:       form.cas_number.trim()       || null,
     catalogue_number: form.catalogue_number.trim() || null,
     manufacturer:     form.manufacturer.trim()     || null,
     vendor:           form.vendor.trim()           || null,
@@ -48,13 +56,19 @@ function buildBody(form) {
   }
 }
 
-function LotForm({ form, setF, onSave, onCancel, saving, saveErr, submitLabel }) {
+// ── LotForm ───────────────────────────────────────────────────────────────────
+function LotForm({ form, setF, onSave, onCancel, saving, saveErr, submitLabel, modSuggestions }) {
+  // Build datalist id scoped to this instance to avoid cross-form conflicts
+  const dlId = 'mod-suggest-' + form.material_type
+
   return (
     <div style={{
       marginBottom: 20, padding: 20, border: '1px solid var(--border)',
       borderRadius: 'var(--radius-lg)', background: 'var(--surface)',
     }}>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 12, marginBottom: 12 }}>
+
+        {/* ── Type ── */}
         <div className="field">
           <label>Type *</label>
           <select className="filter-input" value={form.material_type}
@@ -65,10 +79,10 @@ function LotForm({ form, setF, onSave, onCancel, saving, saveErr, submitLabel })
           </select>
         </div>
 
+        {/* ── Modification / linking key ── */}
         <div className="field">
           <label>
-            {form.material_type === 'amidite' ? 'Base / Modification' :
-             form.material_type === 'reagent'  ? 'Reagent type' : 'CPG name'}
+            {form.material_type === 'reagent' ? 'Reagent type' : 'Modification'}
           </label>
           {form.material_type === 'reagent' ? (
             <select className="filter-input" value={form.canonical_name}
@@ -77,48 +91,85 @@ function LotForm({ form, setF, onSave, onCancel, saving, saveErr, submitLabel })
               {REAGENT_CANONICALS.map(k => <option key={k} value={k}>{k}</option>)}
             </select>
           ) : (
-            <input value={form.canonical_name}
-                   placeholder={form.material_type === 'amidite' ? 'e.g. dA, /5Phos/' : 'e.g. standard dT-CPG'}
-                   onChange={e => setF('canonical_name', e.target.value)} />
+            <>
+              <input
+                list={dlId}
+                value={form.canonical_name}
+                placeholder={form.material_type === 'amidite' ? 'e.g. dA, FAM, /5Phos/' : 'e.g. dT-CPG 500 Å'}
+                onChange={e => setF('canonical_name', e.target.value)}
+              />
+              {form.material_type === 'amidite' && (
+                <datalist id={dlId}>
+                  {BASE_CANONICALS.map(n => <option key={n} value={n} />)}
+                  {modSuggestions.map(n => <option key={n} value={n} />)}
+                </datalist>
+              )}
+            </>
           )}
+          <span style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>
+            Used to link this lot to synthesis run slots
+          </span>
         </div>
 
+        {/* ── Product name ── */}
+        <div className="field">
+          <label>Name</label>
+          <input value={form.name}
+                 placeholder="Full vendor product name"
+                 onChange={e => setF('name', e.target.value)} />
+        </div>
+
+        {/* ── CAS ── */}
+        <div className="field">
+          <label>CAS #</label>
+          <input value={form.cas_number}
+                 placeholder="e.g. 123-45-6"
+                 onChange={e => setF('cas_number', e.target.value)} />
+        </div>
+
+        {/* ── Catalogue # ── */}
         <div className="field">
           <label>Catalogue #</label>
           <input value={form.catalogue_number} placeholder="e.g. 10-1000-02"
                  onChange={e => setF('catalogue_number', e.target.value)} />
         </div>
 
+        {/* ── Lot number ── */}
         <div className="field">
           <label>Lot number *</label>
           <input value={form.lot_number} placeholder="e.g. ABC12345"
                  onChange={e => setF('lot_number', e.target.value)} />
         </div>
 
+        {/* ── Manufacturer ── */}
         <div className="field">
           <label>Manufacturer</label>
           <input value={form.manufacturer} placeholder="e.g. Glen Research"
                  onChange={e => setF('manufacturer', e.target.value)} />
         </div>
 
+        {/* ── Vendor ── */}
         <div className="field">
           <label>Vendor</label>
           <input value={form.vendor} placeholder="e.g. Sigma-Aldrich"
                  onChange={e => setF('vendor', e.target.value)} />
         </div>
 
+        {/* ── MW ── */}
         <div className="field">
           <label>MW (Da)</label>
           <input type="number" step="0.0001" value={form.mw} placeholder="—"
                  onChange={e => setF('mw', e.target.value)} />
         </div>
 
+        {/* ── FW ── */}
         <div className="field">
           <label>FW (g/mol)</label>
           <input type="number" step="0.0001" value={form.fw} placeholder="—"
                  onChange={e => setF('fw', e.target.value)} />
         </div>
 
+        {/* ── Dates ── */}
         <div className="field">
           <label>Received</label>
           <input type="date" value={form.received_date}
@@ -143,6 +194,7 @@ function LotForm({ form, setF, onSave, onCancel, saving, saveErr, submitLabel })
   )
 }
 
+// ── RowMenu ───────────────────────────────────────────────────────────────────
 function RowMenu({ onEdit, onDelete, deleting }) {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
@@ -191,28 +243,34 @@ const menuItemStyle = {
   cursor: 'pointer', fontSize: 13,
 }
 
+// ── MaterialLots ──────────────────────────────────────────────────────────────
 export default function MaterialLots({ api }) {
-  const [lots, setLots]         = useState([])
-  const [loading, setLoading]   = useState(true)
-  const [err, setErr]           = useState('')
+  const [lots, setLots]             = useState([])
+  const [loading, setLoading]       = useState(true)
+  const [err, setErr]               = useState('')
   const [typeFilter, setTypeFilter] = useState('all')
+  const [modSuggestions, setModSuggestions] = useState([])   // canonical_names from modification_catalog
 
-  const [showAdd, setShowAdd]   = useState(false)
-  const [addForm, setAddForm]   = useState(EMPTY_FORM)
-  const [addSaving, setAddSaving] = useState(false)
-  const [addErr, setAddErr]     = useState('')
+  const [showAdd, setShowAdd]         = useState(false)
+  const [addForm, setAddForm]         = useState(EMPTY_FORM)
+  const [addSaving, setAddSaving]     = useState(false)
+  const [addErr, setAddErr]           = useState('')
 
-  const [editingId, setEditingId] = useState(null)
-  const [editForm, setEditForm]   = useState(EMPTY_FORM)
-  const [editSaving, setEditSaving] = useState(false)
-  const [editErr, setEditErr]     = useState('')
+  const [editingId, setEditingId]     = useState(null)
+  const [editForm, setEditForm]       = useState(EMPTY_FORM)
+  const [editSaving, setEditSaving]   = useState(false)
+  const [editErr, setEditErr]         = useState('')
 
-  const [deleting, setDeleting] = useState(null)
+  const [deleting, setDeleting]       = useState(null)
 
   useEffect(() => {
-    api.get('/material-lots')
-      .then(setLots)
-      .catch(() => setErr('Failed to load material lots'))
+    Promise.all([
+      api.get('/material-lots'),
+      api.get('/modifications'),
+    ]).then(([lotsData, mods]) => {
+      setLots(lotsData)
+      setModSuggestions(mods.map(m => m.canonical_name).sort())
+    }).catch(() => setErr('Failed to load material lots'))
       .finally(() => setLoading(false))
   }, [])
 
@@ -279,7 +337,7 @@ export default function MaterialLots({ api }) {
       {/* ── add form ── */}
       {showAdd && (
         <LotForm
-          form={addForm} setF={setAddF}
+          form={addForm} setF={setAddF} modSuggestions={modSuggestions}
           onSave={addLot} onCancel={() => setShowAdd(false)}
           saving={addSaving} saveErr={addErr} submitLabel="Save lot"
         />
@@ -288,7 +346,7 @@ export default function MaterialLots({ api }) {
       {/* ── edit form ── */}
       {editingId != null && (
         <LotForm
-          form={editForm} setF={setEditF}
+          form={editForm} setF={setEditF} modSuggestions={modSuggestions}
           onSave={saveEdit} onCancel={() => setEditingId(null)}
           saving={editSaving} saveErr={editErr} submitLabel="Update lot"
         />
@@ -311,39 +369,58 @@ export default function MaterialLots({ api }) {
           {lots.length === 0 ? 'No lots yet. Add your first lot using the button above.' : 'No lots for this type.'}
         </div>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Type</th><th>Name</th><th>Cat. #</th><th>Lot #</th>
-              <th>Manufacturer</th><th>Vendor</th>
-              <th>MW (Da)</th><th>FW</th>
-              <th>Received</th><th>Expiry</th><th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {displayed.map(l => (
-              <tr key={l.id} style={editingId === l.id ? { background: 'var(--surface)' } : undefined}>
-                <td><span className={`tag ${l.material_type === 'amidite' ? 'rna' : l.material_type === 'cpg' ? 'mixed' : ''}`}>{l.material_type}</span></td>
-                <td className="primary">{l.canonical_name || '—'}</td>
-                <td className="mono">{l.catalogue_number || '—'}</td>
-                <td className="mono">{l.lot_number}</td>
-                <td>{l.manufacturer || '—'}</td>
-                <td>{l.vendor || '—'}</td>
-                <td className="mono">{fmtNum(l.mw)}</td>
-                <td className="mono">{fmtNum(l.fw)}</td>
-                <td className="mono">{l.received_date || '—'}</td>
-                <td className="mono">{l.expiry_date   || '—'}</td>
-                <td style={{ textAlign: 'right' }}>
-                  <RowMenu
-                    deleting={deleting === l.id}
-                    onEdit={() => startEdit(l)}
-                    onDelete={() => deleteLot(l.id)}
-                  />
-                </td>
+        <div style={{ overflowX: 'auto' }}>
+          <table>
+            <thead>
+              <tr>
+                <th>Type</th>
+                <th>Modification</th>
+                <th>Name</th>
+                <th>CAS</th>
+                <th>Cat. #</th>
+                <th>Lot #</th>
+                <th>Manufacturer</th>
+                <th>Vendor</th>
+                <th>MW (Da)</th>
+                <th>FW</th>
+                <th>Received</th>
+                <th>Expiry</th>
+                <th></th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {displayed.map(l => (
+                <tr key={l.id} style={editingId === l.id ? { background: 'var(--surface)' } : undefined}>
+                  <td>
+                    <span className={`tag ${l.material_type === 'amidite' ? 'rna' : l.material_type === 'cpg' ? 'mixed' : ''}`}>
+                      {l.material_type}
+                    </span>
+                  </td>
+                  <td className="mono" style={{ color: 'var(--accent)', fontSize: 12 }}>
+                    {l.canonical_name || '—'}
+                  </td>
+                  <td className="primary">{l.name || '—'}</td>
+                  <td className="mono" style={{ fontSize: 12 }}>{l.cas_number || '—'}</td>
+                  <td className="mono">{l.catalogue_number || '—'}</td>
+                  <td className="mono">{l.lot_number}</td>
+                  <td>{l.manufacturer || '—'}</td>
+                  <td>{l.vendor || '—'}</td>
+                  <td className="mono">{fmtNum(l.mw)}</td>
+                  <td className="mono">{fmtNum(l.fw)}</td>
+                  <td className="mono">{l.received_date || '—'}</td>
+                  <td className="mono">{l.expiry_date   || '—'}</td>
+                  <td style={{ textAlign: 'right' }}>
+                    <RowMenu
+                      deleting={deleting === l.id}
+                      onEdit={() => startEdit(l)}
+                      onDelete={() => deleteLot(l.id)}
+                    />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   )

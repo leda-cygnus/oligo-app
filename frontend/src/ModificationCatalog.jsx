@@ -6,11 +6,25 @@ const EMPTY = {
   machine_position_required: true, description: ''
 }
 
+function toForm(m) {
+  return {
+    id: m.id,
+    canonical_name: m.canonical_name ?? '',
+    aliases: Array.isArray(m.aliases) ? m.aliases.join(', ') : (m.aliases ?? ''),
+    chemistry_class: m.chemistry_class ?? 'standard',
+    end_5prime_ok: !!m.end_5prime_ok,
+    end_3prime_ok: !!m.end_3prime_ok,
+    internal_ok: !!m.internal_ok,
+    machine_position_required: !!m.machine_position_required,
+    description: m.description ?? '',
+  }
+}
+
 export default function ModificationCatalog({ api }) {
   const [mods, setMods]       = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState('')
-  const [form, setForm]       = useState(null)
+  const [form, setForm]       = useState(null)   // null = hidden, object = add or edit
   const [saving, setSaving]   = useState(false)
   const [saveErr, setSaveErr] = useState('')
 
@@ -32,7 +46,11 @@ export default function ModificationCatalog({ api }) {
         ...form,
         aliases: form.aliases.split(',').map(a => a.trim()).filter(Boolean)
       }
-      await api.post('/modifications', payload)
+      if (form.id) {
+        await api.put(`/modifications/${form.id}`, payload)
+      } else {
+        await api.post('/modifications', payload)
+      }
       setForm(null)
       load()
     } catch (err) {
@@ -46,6 +64,8 @@ export default function ModificationCatalog({ api }) {
 
   if (loading) return <div style={{color:'var(--text-muted)'}}>Loading…</div>
   if (error)   return <div className="notice error">{error}</div>
+
+  const isEditing = form && form.id
 
   return (
     <div>
@@ -61,7 +81,9 @@ export default function ModificationCatalog({ api }) {
 
       {form && (
         <div style={{background:'var(--surface)', border:'1px solid var(--border)', borderRadius:'var(--radius-lg)', padding:20, marginBottom:24}}>
-          <div style={{fontWeight:600, marginBottom:16, fontSize:13}}>New Modification</div>
+          <div style={{fontWeight:600, marginBottom:16, fontSize:13}}>
+            {isEditing ? `Edit — ${form.canonical_name}` : 'New Modification'}
+          </div>
 
           <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:12}}>
             <div className="field">
@@ -106,7 +128,7 @@ export default function ModificationCatalog({ api }) {
 
           <div style={{display:'flex', gap:10}}>
             <button className="btn-primary" onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
-            <button className="btn-ghost" onClick={() => setForm(null)}>Cancel</button>
+            <button className="btn-ghost" onClick={() => { setForm(null); setSaveErr('') }}>Cancel</button>
           </div>
         </div>
       )}
@@ -121,6 +143,7 @@ export default function ModificationCatalog({ api }) {
             <th>Int</th>
             <th>3'</th>
             <th>Slot</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
@@ -135,6 +158,13 @@ export default function ModificationCatalog({ api }) {
               <td style={{color: m.internal_ok ? 'var(--accent)' : 'var(--text-dim)'}}>{m.internal_ok ? '✓' : '—'}</td>
               <td style={{color: m.end_3prime_ok ? 'var(--accent)' : 'var(--text-dim)'}}>{m.end_3prime_ok ? '✓' : '—'}</td>
               <td style={{color: m.machine_position_required ? 'var(--accent)' : 'var(--text-dim)'}}>{m.machine_position_required ? '✓' : '—'}</td>
+              <td>
+                <button
+                  className="btn-ghost"
+                  style={{padding:'2px 8px', fontSize:11}}
+                  onClick={() => { setSaveErr(''); setForm(toForm(m)) }}
+                >Edit</button>
+              </td>
             </tr>
           ))}
         </tbody>

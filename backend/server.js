@@ -80,6 +80,25 @@ app.post('/api/modifications', async (req, res) => {
   })
 })
 
+// PUT /api/modifications/:id
+app.put('/api/modifications/:id', async (req, res) => {
+  const { id } = req.params
+  const { canonical_name, aliases, chemistry_class, end_5prime_ok,
+          end_3prime_ok, internal_ok, machine_position_required, description } = req.body
+  await withDb(req, res, async (client) => {
+    const result = await client.query(
+      `UPDATE modification_catalog
+          SET canonical_name=$1, aliases=$2, chemistry_class=$3, end_5prime_ok=$4,
+              end_3prime_ok=$5, internal_ok=$6, machine_position_required=$7, description=$8
+        WHERE id=$9`,
+      [canonical_name, aliases, chemistry_class, end_5prime_ok,
+       end_3prime_ok, internal_ok, machine_position_required, description, id]
+    )
+    if (result.rowCount === 0) return res.status(404).json({ error: 'Not found' })
+    res.json({ ok: true })
+  })
+})
+
 // parse_idt_sequence returns modifications as a PostgreSQL composite array:
 // {"(raw_token,position_type,after_nt_index,display_order,canonical_name,mod_id,resolved)",...}
 function parseModArray(str) {
@@ -699,8 +718,8 @@ app.post('/api/orders', async (req, res) => {
 app.get('/api/material-lots', async (req, res) => {
   await withDb(req, res, async (client) => {
     const result = await client.query(`
-      SELECT id, material_type, canonical_name, catalogue_number, lot_number,
-             manufacturer, vendor, mw, fw,
+      SELECT id, material_type, canonical_name, name, cas_number,
+             catalogue_number, lot_number, manufacturer, vendor, mw, fw,
              to_char(received_date, 'YYYY-MM-DD') AS received_date,
              to_char(expiry_date,  'YYYY-MM-DD') AS expiry_date
       FROM material_lot
@@ -712,21 +731,24 @@ app.get('/api/material-lots', async (req, res) => {
 
 // POST /api/material-lots
 app.post('/api/material-lots', async (req, res) => {
-  const { material_type, canonical_name, catalogue_number, lot_number,
+  const { material_type, canonical_name, name, cas_number,
+          catalogue_number, lot_number,
           manufacturer, vendor, mw, fw, received_date, expiry_date } = req.body
   if (!material_type || !lot_number)
     return res.status(400).json({ error: 'material_type and lot_number required' })
   await withDb(req, res, async (client) => {
     const r = await client.query(`
       INSERT INTO material_lot
-        (material_type, canonical_name, catalogue_number, lot_number,
-         manufacturer, vendor, mw, fw, received_date, expiry_date)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-      RETURNING id, material_type, canonical_name, catalogue_number, lot_number,
-        manufacturer, vendor, mw, fw,
+        (material_type, canonical_name, name, cas_number,
+         catalogue_number, lot_number, manufacturer, vendor,
+         mw, fw, received_date, expiry_date)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+      RETURNING id, material_type, canonical_name, name, cas_number,
+        catalogue_number, lot_number, manufacturer, vendor, mw, fw,
         to_char(received_date, 'YYYY-MM-DD') AS received_date,
         to_char(expiry_date,  'YYYY-MM-DD') AS expiry_date
-    `, [material_type, canonical_name || null, catalogue_number || null, lot_number,
+    `, [material_type, canonical_name || null, name || null, cas_number || null,
+        catalogue_number || null, lot_number,
         manufacturer || null, vendor || null,
         mw || null, fw || null,
         received_date || null, expiry_date || null])
@@ -738,7 +760,8 @@ app.post('/api/material-lots', async (req, res) => {
 app.put('/api/material-lots/:id', async (req, res) => {
   const id = parseInt(req.params.id)
   if (!id) return res.status(400).json({ error: 'invalid id' })
-  const { material_type, canonical_name, catalogue_number, lot_number,
+  const { material_type, canonical_name, name, cas_number,
+          catalogue_number, lot_number,
           manufacturer, vendor, mw, fw, received_date, expiry_date } = req.body
   if (!material_type || !lot_number)
     return res.status(400).json({ error: 'material_type and lot_number required' })
@@ -747,20 +770,23 @@ app.put('/api/material-lots/:id', async (req, res) => {
       UPDATE material_lot SET
         material_type    = $1,
         canonical_name   = $2,
-        catalogue_number = $3,
-        lot_number       = $4,
-        manufacturer     = $5,
-        vendor           = $6,
-        mw               = $7,
-        fw               = $8,
-        received_date    = $9,
-        expiry_date      = $10
-      WHERE id = $11
-      RETURNING id, material_type, canonical_name, catalogue_number, lot_number,
-        manufacturer, vendor, mw, fw,
+        name             = $3,
+        cas_number       = $4,
+        catalogue_number = $5,
+        lot_number       = $6,
+        manufacturer     = $7,
+        vendor           = $8,
+        mw               = $9,
+        fw               = $10,
+        received_date    = $11,
+        expiry_date      = $12
+      WHERE id = $13
+      RETURNING id, material_type, canonical_name, name, cas_number,
+        catalogue_number, lot_number, manufacturer, vendor, mw, fw,
         to_char(received_date, 'YYYY-MM-DD') AS received_date,
         to_char(expiry_date,  'YYYY-MM-DD') AS expiry_date
-    `, [material_type, canonical_name || null, catalogue_number || null, lot_number,
+    `, [material_type, canonical_name || null, name || null, cas_number || null,
+        catalogue_number || null, lot_number,
         manufacturer || null, vendor || null,
         mw || null, fw || null,
         received_date || null, expiry_date || null,
@@ -844,7 +870,7 @@ app.get('/api/runs/:id', async (req, res) => {
     `, [runId])
 
     const modMapRes = await client.query(`
-      SELECT smm.modification_id, smm.synth_slot, smm.material_lot_id,
+      SELECT smm.modification_id, smm.synth_slot, smm.material_lot_id, smm.delivery_method,
              mc.canonical_name, mc.aliases,
              ml.lot_number AS lot_lot_number, ml.provider, ml.mw_addition
       FROM synthesis_run_mod_map smm
@@ -873,8 +899,14 @@ app.get('/api/runs/:id/reagents', async (req, res) => {
       SELECT plate_position, lot_number, material_lot_id FROM synthesis_run_cpg WHERE run_id = $1
     `, [runId])
 
+    const ownConj = await client.query(`
+      SELECT modification_name, reagent_lot,
+             to_char(date_conjugated, 'YYYY-MM-DD') AS date_conjugated, operator, notes
+      FROM synthesis_run_conjugation WHERE run_id = $1
+    `, [runId])
+
     if (ownLots.rows.length > 0 || ownCpg.rows.length > 0) {
-      return res.json({ reagents: ownLots.rows, cpg: ownCpg.rows, carryover_from: null })
+      return res.json({ reagents: ownLots.rows, cpg: ownCpg.rows, conjugation: ownConj.rows, carryover_from: null })
     }
 
     // No data yet — carry over from the most recent previous run
@@ -882,7 +914,7 @@ app.get('/api/runs/:id/reagents', async (req, res) => {
       SELECT id FROM synthesis_run WHERE id < $1 ORDER BY id DESC LIMIT 1
     `, [runId])
     if (!prevRun.rows.length) {
-      return res.json({ reagents: [], cpg: [], carryover_from: null })
+      return res.json({ reagents: [], cpg: [], conjugation: [], carryover_from: null })
     }
     const prevId = prevRun.rows[0].id
     const prevLots = await client.query(`
@@ -893,7 +925,7 @@ app.get('/api/runs/:id/reagents', async (req, res) => {
     const prevCpg = await client.query(`
       SELECT plate_position, lot_number, material_lot_id FROM synthesis_run_cpg WHERE run_id = $1
     `, [prevId])
-    res.json({ reagents: prevLots.rows, cpg: [], carryover_from: prevId })
+    res.json({ reagents: prevLots.rows, cpg: [], conjugation: [], carryover_from: prevId })
   })
 })
 
@@ -956,7 +988,7 @@ app.put('/api/runs/:id/results', async (req, res) => {
 app.put('/api/runs/:id/reagents', async (req, res) => {
   const runId = parseInt(req.params.id)
   if (!runId) return res.status(400).json({ error: 'invalid run id' })
-  const { reagents = [], cpg = [], mod_lots = [] } = req.body
+  const { reagents = [], cpg = [], mod_lots = [], conjugation = [] } = req.body
 
   await withDb(req, res, async (client) => {
     await client.query('BEGIN')
@@ -983,6 +1015,20 @@ app.put('/api/runs/:id/reagents', async (req, res) => {
             SET lot_number = EXCLUDED.lot_number, material_lot_id = EXCLUDED.material_lot_id
         `, [runId, c.plate_position, c.lot_number || null, c.material_lot_id || null])
       }
+      // Save conjugation info for NHS ester modifications
+      for (const c of conjugation) {
+        if (!c.modification_name) continue
+        await client.query(`
+          INSERT INTO synthesis_run_conjugation
+            (run_id, modification_name, reagent_lot, date_conjugated, operator, notes)
+          VALUES ($1, $2, $3, $4::date, $5, $6)
+          ON CONFLICT (run_id, modification_name) DO UPDATE
+            SET reagent_lot = EXCLUDED.reagent_lot, date_conjugated = EXCLUDED.date_conjugated,
+                operator = EXCLUDED.operator, notes = EXCLUDED.notes
+        `, [runId, c.modification_name, c.reagent_lot || null,
+            c.date_conjugated || null, c.operator || null, c.notes || null])
+      }
+
       // Link material lots to modification slots (enables lot-specific mw_addition in calc)
       for (const m of mod_lots) {
         if (!m.material_lot_id || !m.canonical_name) continue
@@ -1319,9 +1365,9 @@ app.post('/api/runs', async (req, res) => {
 
       for (const entry of (mod_map || [])) {
         await client.query(
-          `INSERT INTO synthesis_run_mod_map (run_id, modification_id, synth_slot)
-           VALUES ($1, $2, $3)`,
-          [runId, entry.modification_id, entry.synth_slot]
+          `INSERT INTO synthesis_run_mod_map (run_id, modification_id, synth_slot, delivery_method)
+           VALUES ($1, $2, $3, $4)`,
+          [runId, entry.modification_id, entry.synth_slot, entry.delivery_method || 'amidite']
         )
       }
 
