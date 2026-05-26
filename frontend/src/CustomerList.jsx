@@ -9,6 +9,11 @@ const ADDR_FIELDS = [
   { key: 'phone',         label: 'Phone' },
 ]
 
+const EMPTY_FORM = {
+  contact_name: '', company_name: '', email: '',
+  building_name: '', lab: '', street: '', city: '', zip: '', phone: '',
+}
+
 function formatAddress(c) {
   return [c.street, c.city, c.zip].filter(Boolean).join(', ') || null
 }
@@ -17,8 +22,10 @@ export default function CustomerList({ api, onNavigateToOrders }) {
   const [customers, setCustomers] = useState([])
   const [loading, setLoading]     = useState(true)
   const [err, setErr]             = useState('')
-  const [editId, setEditId]       = useState(null)
-  const [form, setForm]           = useState({})
+
+  // 'add' | number (editing id) | null
+  const [modalMode, setModalMode] = useState(null)
+  const [form, setForm]           = useState(EMPTY_FORM)
   const [saving, setSaving]       = useState(false)
   const [saveErr, setSaveErr]     = useState('')
 
@@ -29,8 +36,13 @@ export default function CustomerList({ api, onNavigateToOrders }) {
       .finally(() => setLoading(false))
   }, [])
 
+  function openAdd() {
+    setForm(EMPTY_FORM)
+    setSaveErr('')
+    setModalMode('add')
+  }
+
   function openEdit(c) {
-    setEditId(c.id)
     setForm({
       contact_name:  c.contact_name  ?? '',
       company_name:  c.company_name  ?? '',
@@ -43,20 +55,30 @@ export default function CustomerList({ api, onNavigateToOrders }) {
       phone:         c.phone         ?? '',
     })
     setSaveErr('')
+    setModalMode(c.id)
   }
 
-  async function saveEdit() {
+  function closeModal() { setModalMode(null) }
+
+  async function handleSave() {
     setSaving(true); setSaveErr('')
     try {
-      const updated = await api.put(`/customers/${editId}`, form)
-      setCustomers(cs => cs.map(c => c.id === editId ? { ...c, ...updated } : c))
-      setEditId(null)
+      if (modalMode === 'add') {
+        const created = await api.post('/customers', form)
+        setCustomers(cs => [created, ...cs])
+      } else {
+        const updated = await api.put(`/customers/${modalMode}`, form)
+        setCustomers(cs => cs.map(c => c.id === modalMode ? { ...c, ...updated } : c))
+      }
+      setModalMode(null)
     } catch {
       setSaveErr('Save failed.')
     } finally {
       setSaving(false)
     }
   }
+
+  const formValid = form.contact_name.trim() || form.company_name.trim() || form.email.trim()
 
   if (loading) return <div className="notice">Loading…</div>
   if (err)     return <div className="notice error">{err}</div>
@@ -68,10 +90,11 @@ export default function CustomerList({ api, onNavigateToOrders }) {
           <h2>Customers</h2>
           <p>{customers.length} customer{customers.length !== 1 ? 's' : ''}</p>
         </div>
+        <button className="btn-primary" onClick={openAdd}>+ Add customer</button>
       </div>
 
       {customers.length === 0
-        ? <div className="notice warn">No customers yet. They are created automatically when importing orders.</div>
+        ? <div className="notice warn">No customers yet. Add one above or import an order.</div>
         : (
           <table className="rl-table">
             <thead>
@@ -120,17 +143,20 @@ export default function CustomerList({ api, onNavigateToOrders }) {
         )
       }
 
-      {editId !== null && (
+      {/* ── Add / Edit modal ── */}
+      {modalMode !== null && (
         <div style={{
           position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200,
-        }} onClick={() => setEditId(null)}>
+        }} onClick={closeModal}>
           <div style={{
             background: 'var(--surface)', borderRadius: 10, padding: 28,
             minWidth: 360, maxWidth: 500, width: '90%',
             boxShadow: '0 8px 32px rgba(0,0,0,0.25)',
           }} onClick={e => e.stopPropagation()}>
-            <h3 style={{ marginBottom: 18 }}>Edit customer</h3>
+            <h3 style={{ marginBottom: 18 }}>
+              {modalMode === 'add' ? 'Add customer' : 'Edit customer'}
+            </h3>
 
             {[
               { key: 'contact_name', label: 'Contact name' },
@@ -163,9 +189,9 @@ export default function CustomerList({ api, onNavigateToOrders }) {
 
             {saveErr && <div className="notice error" style={{ marginBottom: 12 }}>{saveErr}</div>}
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 4 }}>
-              <button className="btn-ghost" onClick={() => setEditId(null)}>Cancel</button>
-              <button className="btn-primary" disabled={saving} onClick={saveEdit}>
-                {saving ? 'Saving…' : 'Save'}
+              <button className="btn-ghost" onClick={closeModal}>Cancel</button>
+              <button className="btn-primary" disabled={saving || !formValid} onClick={handleSave}>
+                {saving ? 'Saving…' : modalMode === 'add' ? 'Add customer' : 'Save'}
               </button>
             </div>
           </div>

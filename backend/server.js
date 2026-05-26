@@ -395,6 +395,25 @@ app.get('/api/customers', async (req, res) => {
   })
 })
 
+// POST /api/customers
+app.post('/api/customers', async (req, res) => {
+  const { contact_name, company_name, email, building_name, lab, street, city, zip, phone } = req.body
+  if (!contact_name && !company_name && !email)
+    return res.status(400).json({ error: 'At least one of contact_name, company_name, or email is required' })
+  await withDb(req, res, async (client) => {
+    const r = await client.query(
+      `INSERT INTO customer
+         (contact_name, company_name, email, building_name, lab, street, city, zip, phone)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       RETURNING id, contact_name, company_name, email,
+                 building_name, lab, street, city, zip, phone`,
+      [contact_name || null, company_name || null, email || null,
+       building_name || null, lab || null, street || null, city || null, zip || null, phone || null]
+    )
+    res.status(201).json({ ...r.rows[0], order_count: 0 })
+  })
+})
+
 // PUT /api/customers/:id
 app.put('/api/customers/:id', async (req, res) => {
   const { contact_name, company_name, email, building_name, lab, street, city, zip, phone } = req.body
