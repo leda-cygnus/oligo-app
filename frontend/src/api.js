@@ -10,6 +10,7 @@ export function makeApi(credentials) {
   const get     = (path) => axios.get(`${BASE}${path}`, { headers }).then(r => r.data)
   const post    = (path, body) => axios.post(`${BASE}${path}`, body, { headers }).then(r => r.data)
   const put     = (path, body) => axios.put(`${BASE}${path}`, body, { headers }).then(r => r.data)
+  const patch   = (path, body) => axios.patch(`${BASE}${path}`, body, { headers }).then(r => r.data)
   const del     = (path) => axios.delete(`${BASE}${path}`, { headers }).then(r => r.data)
   const upload  = (path, file) => {
     const form = new FormData()
@@ -27,5 +28,5 @@ export function makeApi(credentials) {
   const getRaw = (path) =>
     fetch(`${BASE}${path}`, { method: 'GET', headers })
 
-  return { get, post, put, del, upload, postRaw, getRaw }
+  return { get, post, put, patch, del, upload, postRaw, getRaw }
 }

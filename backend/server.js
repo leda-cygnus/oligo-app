@@ -721,7 +721,8 @@ app.get('/api/material-lots', async (req, res) => {
       SELECT id, material_type, canonical_name, name, cas_number,
              catalogue_number, lot_number, manufacturer, vendor, mw, fw,
              to_char(received_date, 'YYYY-MM-DD') AS received_date,
-             to_char(expiry_date,  'YYYY-MM-DD') AS expiry_date
+             to_char(expiry_date,  'YYYY-MM-DD') AS expiry_date,
+             out_of_stock
       FROM material_lot
       ORDER BY material_type, canonical_name, created_at DESC
     `)
@@ -746,7 +747,8 @@ app.post('/api/material-lots', async (req, res) => {
       RETURNING id, material_type, canonical_name, name, cas_number,
         catalogue_number, lot_number, manufacturer, vendor, mw, fw,
         to_char(received_date, 'YYYY-MM-DD') AS received_date,
-        to_char(expiry_date,  'YYYY-MM-DD') AS expiry_date
+        to_char(expiry_date,  'YYYY-MM-DD') AS expiry_date,
+        out_of_stock
     `, [material_type, canonical_name || null, name || null, cas_number || null,
         catalogue_number || null, lot_number,
         manufacturer || null, vendor || null,
@@ -784,13 +786,29 @@ app.put('/api/material-lots/:id', async (req, res) => {
       RETURNING id, material_type, canonical_name, name, cas_number,
         catalogue_number, lot_number, manufacturer, vendor, mw, fw,
         to_char(received_date, 'YYYY-MM-DD') AS received_date,
-        to_char(expiry_date,  'YYYY-MM-DD') AS expiry_date
+        to_char(expiry_date,  'YYYY-MM-DD') AS expiry_date,
+        out_of_stock
     `, [material_type, canonical_name || null, name || null, cas_number || null,
         catalogue_number || null, lot_number,
         manufacturer || null, vendor || null,
         mw || null, fw || null,
         received_date || null, expiry_date || null,
         id])
+    if (!r.rows.length) return res.status(404).json({ error: 'Not found' })
+    res.json(r.rows[0])
+  })
+})
+
+// PATCH /api/material-lots/:id/stock — toggle out_of_stock
+app.patch('/api/material-lots/:id/stock', async (req, res) => {
+  const id = parseInt(req.params.id)
+  if (!id) return res.status(400).json({ error: 'invalid id' })
+  const { out_of_stock } = req.body
+  await withDb(req, res, async (client) => {
+    const r = await client.query(
+      'UPDATE material_lot SET out_of_stock = $1 WHERE id = $2 RETURNING id, out_of_stock',
+      [!!out_of_stock, id]
+    )
     if (!r.rows.length) return res.status(404).json({ error: 'Not found' })
     res.json(r.rows[0])
   })

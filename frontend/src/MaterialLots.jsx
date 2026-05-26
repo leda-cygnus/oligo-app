@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 
 const TYPE_TABS = [
   { key: 'all',     label: 'All' },
@@ -17,6 +17,13 @@ const EMPTY_FORM = {
   catalogue_number: '', lot_number: '',
   manufacturer: '', vendor: '', mw: '', fw: '', received_date: '', expiry_date: '',
 }
+
+// Columns that support sorting
+const SORT_COLS = [
+  'material_type', 'canonical_name', 'name', 'cas_number',
+  'catalogue_number', 'lot_number', 'manufacturer', 'vendor',
+  'mw', 'fw', 'received_date', 'expiry_date',
+]
 
 function fmtNum(v) {
   if (v == null || v === '') return '—'
@@ -56,9 +63,27 @@ function buildBody(form) {
   }
 }
 
+function sortRows(rows, key, dir) {
+  if (!key) return rows
+  return [...rows].sort((a, b) => {
+    let va = a[key], vb = b[key]
+    if (va == null) va = key === 'mw' || key === 'fw' ? -Infinity : ''
+    if (vb == null) vb = key === 'mw' || key === 'fw' ? -Infinity : ''
+    if (key === 'mw' || key === 'fw') {
+      va = parseFloat(va) || 0
+      vb = parseFloat(vb) || 0
+      return dir === 'asc' ? va - vb : vb - va
+    }
+    va = String(va).toLowerCase()
+    vb = String(vb).toLowerCase()
+    if (va < vb) return dir === 'asc' ? -1 : 1
+    if (va > vb) return dir === 'asc' ? 1 : -1
+    return 0
+  })
+}
+
 // ── LotForm ───────────────────────────────────────────────────────────────────
 function LotForm({ form, setF, onSave, onCancel, saving, saveErr, submitLabel, modSuggestions }) {
-  // Build datalist id scoped to this instance to avoid cross-form conflicts
   const dlId = 'mod-suggest-' + form.material_type
 
   return (
@@ -194,8 +219,28 @@ function LotForm({ form, setF, onSave, onCancel, saving, saveErr, submitLabel, m
   )
 }
 
+// ── SortTh ────────────────────────────────────────────────────────────────────
+function SortTh({ col, sortKey, sortDir, onSort, children, style }) {
+  const active = sortKey === col
+  return (
+    <th style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap', ...style }}
+        onClick={() => onSort(col)}>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+        {children}
+        <span style={{
+          fontSize: 9,
+          color: active ? 'var(--accent)' : 'var(--text-dim)',
+          opacity: active ? 1 : 0.45,
+        }}>
+          {active ? (sortDir === 'asc' ? '▲' : '▼') : '↕'}
+        </span>
+      </span>
+    </th>
+  )
+}
+
 // ── RowMenu ───────────────────────────────────────────────────────────────────
-function RowMenu({ onEdit, onDelete, deleting }) {
+function RowMenu({ lot, onEdit, onToggleStock, onDelete }) {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
 
@@ -212,21 +257,23 @@ function RowMenu({ onEdit, onDelete, deleting }) {
     <div ref={ref} style={{ position: 'relative', display: 'inline-block' }}>
       <button
         className="btn-ghost"
-        style={{ fontSize: 18, padding: '1px 8px', lineHeight: 1, letterSpacing: 1 }}
-        disabled={deleting}
+        style={{ fontSize: 16, padding: '2px 8px', lineHeight: 1 }}
         onClick={() => setOpen(o => !o)}
       >
-        {deleting ? '…' : '···'}
+        ⋮
       </button>
       {open && (
         <div style={{
           position: 'absolute', right: 0, top: '100%', zIndex: 200,
           background: 'var(--surface)', border: '1px solid var(--border)',
           borderRadius: 'var(--radius)', boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-          minWidth: 110, overflow: 'hidden',
+          minWidth: 150, overflow: 'hidden',
         }}>
           <button style={menuItemStyle} onClick={() => { setOpen(false); onEdit() }}>
             Edit
+          </button>
+          <button style={menuItemStyle} onClick={() => { setOpen(false); onToggleStock() }}>
+            {lot.out_of_stock ? 'Back in stock' : 'Mark out of stock'}
           </button>
           <button style={{ ...menuItemStyle, color: '#ef4444' }} onClick={() => { setOpen(false); onDelete() }}>
             Delete
@@ -240,7 +287,7 @@ function RowMenu({ onEdit, onDelete, deleting }) {
 const menuItemStyle = {
   display: 'block', width: '100%', textAlign: 'left',
   padding: '8px 14px', border: 'none', background: 'none',
-  cursor: 'pointer', fontSize: 13,
+  cursor: 'pointer', fontSize: 13, color: 'inherit',
 }
 
 // ── MaterialLots ──────────────────────────────────────────────────────────────
@@ -248,20 +295,30 @@ export default function MaterialLots({ api }) {
   const [lots, setLots]             = useState([])
   const [loading, setLoading]       = useState(true)
   const [err, setErr]               = useState('')
-  const [typeFilter, setTypeFilter] = useState('all')
-  const [modSuggestions, setModSuggestions] = useState([])   // canonical_names from modification_catalog
+  const [modSuggestions, setModSuggestions] = useState([])
 
-  const [showAdd, setShowAdd]         = useState(false)
-  const [addForm, setAddForm]         = useState(EMPTY_FORM)
-  const [addSaving, setAddSaving]     = useState(false)
-  const [addErr, setAddErr]           = useState('')
+  // filters
+  const [typeFilter, setTypeFilter]           = useState('all')
+  const [search, setSearch]                   = useState('')
+  const [showOutOfStock, setShowOutOfStock]   = useState(false)
 
-  const [editingId, setEditingId]     = useState(null)
-  const [editForm, setEditForm]       = useState(EMPTY_FORM)
-  const [editSaving, setEditSaving]   = useState(false)
-  const [editErr, setEditErr]         = useState('')
+  // sort
+  const [sortKey, setSortKey] = useState(null)
+  const [sortDir, setSortDir] = useState('asc')
 
-  const [deleting, setDeleting]       = useState(null)
+  // add form
+  const [showAdd, setShowAdd]     = useState(false)
+  const [addForm, setAddForm]     = useState(EMPTY_FORM)
+  const [addSaving, setAddSaving] = useState(false)
+  const [addErr, setAddErr]       = useState('')
+
+  // edit form
+  const [editingId, setEditingId]   = useState(null)
+  const [editForm, setEditForm]     = useState(EMPTY_FORM)
+  const [editSaving, setEditSaving] = useState(false)
+  const [editErr, setEditErr]       = useState('')
+
+  const [deleting, setDeleting] = useState(null)
 
   useEffect(() => {
     Promise.all([
@@ -274,9 +331,50 @@ export default function MaterialLots({ api }) {
       .finally(() => setLoading(false))
   }, [])
 
-  const displayed = typeFilter === 'all' ? lots : lots.filter(l => l.material_type === typeFilter)
+  // ── derived display list ──────────────────────────────────────────────────
+  const displayed = useMemo(() => {
+    let rows = lots
 
-  function setAddF(field, val) { setAddForm(f => ({ ...f, [field]: val })) }
+    // type filter
+    if (typeFilter !== 'all') rows = rows.filter(l => l.material_type === typeFilter)
+
+    // out-of-stock filter
+    if (!showOutOfStock) rows = rows.filter(l => !l.out_of_stock)
+
+    // text search
+    const q = search.trim().toLowerCase()
+    if (q) {
+      rows = rows.filter(l =>
+        [l.canonical_name, l.name, l.cas_number, l.catalogue_number,
+         l.lot_number, l.manufacturer, l.vendor]
+          .some(v => v && String(v).toLowerCase().includes(q))
+      )
+    }
+
+    // sort
+    rows = sortRows(rows, sortKey, sortDir)
+
+    return rows
+  }, [lots, typeFilter, showOutOfStock, search, sortKey, sortDir])
+
+  const outOfStockCount = useMemo(
+    () => lots.filter(l => l.out_of_stock).length,
+    [lots]
+  )
+
+  function handleSort(col) {
+    if (!SORT_COLS.includes(col)) return
+    setSortKey(prev => {
+      if (prev === col) {
+        setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+        return col
+      }
+      setSortDir('asc')
+      return col
+    })
+  }
+
+  function setAddF(field, val)  { setAddForm(f => ({ ...f, [field]: val })) }
   function setEditF(field, val) { setEditForm(f => ({ ...f, [field]: val })) }
 
   async function addLot() {
@@ -309,6 +407,13 @@ export default function MaterialLots({ api }) {
     finally { setEditSaving(false) }
   }
 
+  async function toggleStock(lot) {
+    try {
+      const res = await api.patch(`/material-lots/${lot.id}/stock`, { out_of_stock: !lot.out_of_stock })
+      setLots(ls => ls.map(l => l.id === lot.id ? { ...l, out_of_stock: res.out_of_stock } : l))
+    } catch { setErr('Failed to update stock status') }
+  }
+
   async function deleteLot(id) {
     setDeleting(id)
     try {
@@ -321,13 +426,22 @@ export default function MaterialLots({ api }) {
   if (loading) return <div className="notice">Loading…</div>
   if (err)     return <div className="notice error">{err}</div>
 
+  const thProps = { sortKey, sortDir, onSort: handleSort }
+
   return (
     <div>
       {/* ── header ── */}
       <div className="section-head">
         <div>
           <h2>Material Lots</h2>
-          <p>{displayed.length} lot{displayed.length !== 1 ? 's' : ''}</p>
+          <p>
+            {displayed.length} lot{displayed.length !== 1 ? 's' : ''}
+            {!showOutOfStock && outOfStockCount > 0 && (
+              <span style={{ marginLeft: 6, color: 'var(--text-dim)', fontSize: 12 }}>
+                · {outOfStockCount} out of stock hidden
+              </span>
+            )}
+          </p>
         </div>
         <button className="btn-primary" onClick={() => { setShowAdd(s => !s); setAddErr(''); setEditingId(null) }}>
           {showAdd ? '✕ Cancel' : '+ Add lot'}
@@ -352,45 +466,73 @@ export default function MaterialLots({ api }) {
         />
       )}
 
-      {/* ── type filter ── */}
-      <div style={{ display: 'flex', gap: 6, marginBottom: 16 }}>
-        {TYPE_TABS.map(t => (
-          <button key={t.key}
-                  className={`srb-opt-btn ${typeFilter === t.key ? 'active' : ''}`}
-                  onClick={() => setTypeFilter(t.key)}>
-            {t.label}
-          </button>
-        ))}
+      {/* ── filter bar ── */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
+
+        {/* type tabs */}
+        <div style={{ display: 'flex', gap: 4 }}>
+          {TYPE_TABS.map(t => (
+            <button key={t.key}
+                    className={`srb-opt-btn ${typeFilter === t.key ? 'active' : ''}`}
+                    onClick={() => setTypeFilter(t.key)}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {/* text search */}
+        <input
+          className="filter-input"
+          style={{ minWidth: 200, flex: '1 1 200px', maxWidth: 320 }}
+          placeholder="Search name, lot, modification, vendor…"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+        />
+
+        {/* out-of-stock toggle */}
+        <button
+          className={`srb-opt-btn ${showOutOfStock ? 'active' : ''}`}
+          onClick={() => setShowOutOfStock(s => !s)}
+          title={showOutOfStock ? 'Hide out-of-stock lots' : 'Show out-of-stock lots'}
+        >
+          {showOutOfStock ? '● Show all' : '○ In stock only'}
+        </button>
       </div>
 
       {/* ── table ── */}
       {displayed.length === 0 ? (
         <div className="notice warn">
-          {lots.length === 0 ? 'No lots yet. Add your first lot using the button above.' : 'No lots for this type.'}
+          {lots.length === 0
+            ? 'No lots yet. Add your first lot using the button above.'
+            : 'No lots match the current filters.'}
         </div>
       ) : (
         <div style={{ overflowX: 'auto' }}>
           <table>
             <thead>
               <tr>
-                <th>Type</th>
-                <th>Modification</th>
-                <th>Name</th>
-                <th>CAS</th>
-                <th>Cat. #</th>
-                <th>Lot #</th>
-                <th>Manufacturer</th>
-                <th>Vendor</th>
-                <th>MW (Da)</th>
-                <th>FW</th>
-                <th>Received</th>
-                <th>Expiry</th>
+                <SortTh col="material_type"    {...thProps}>Type</SortTh>
+                <SortTh col="canonical_name"   {...thProps}>Modification</SortTh>
+                <SortTh col="name"             {...thProps}>Name</SortTh>
+                <SortTh col="cas_number"       {...thProps}>CAS</SortTh>
+                <SortTh col="catalogue_number" {...thProps}>Cat. #</SortTh>
+                <SortTh col="lot_number"       {...thProps}>Lot #</SortTh>
+                <SortTh col="manufacturer"     {...thProps}>Manufacturer</SortTh>
+                <SortTh col="vendor"           {...thProps}>Vendor</SortTh>
+                <SortTh col="mw"               {...thProps}>MW (Da)</SortTh>
+                <SortTh col="fw"               {...thProps}>FW</SortTh>
+                <SortTh col="received_date"    {...thProps}>Received</SortTh>
+                <SortTh col="expiry_date"      {...thProps}>Expiry</SortTh>
                 <th></th>
               </tr>
             </thead>
             <tbody>
               {displayed.map(l => (
-                <tr key={l.id} style={editingId === l.id ? { background: 'var(--surface)' } : undefined}>
+                <tr key={l.id}
+                    style={{
+                      opacity: l.out_of_stock ? 0.45 : 1,
+                      background: editingId === l.id ? 'var(--surface)' : undefined,
+                    }}>
                   <td>
                     <span className={`tag ${l.material_type === 'amidite' ? 'rna' : l.material_type === 'cpg' ? 'mixed' : ''}`}>
                       {l.material_type}
@@ -399,7 +541,9 @@ export default function MaterialLots({ api }) {
                   <td className="mono" style={{ color: 'var(--accent)', fontSize: 12 }}>
                     {l.canonical_name || '—'}
                   </td>
-                  <td className="primary">{l.name || '—'}</td>
+                  <td className="primary" style={{ textDecoration: l.out_of_stock ? 'line-through' : 'none' }}>
+                    {l.name || '—'}
+                  </td>
                   <td className="mono" style={{ fontSize: 12 }}>{l.cas_number || '—'}</td>
                   <td className="mono">{l.catalogue_number || '—'}</td>
                   <td className="mono">{l.lot_number}</td>
@@ -408,11 +552,12 @@ export default function MaterialLots({ api }) {
                   <td className="mono">{fmtNum(l.mw)}</td>
                   <td className="mono">{fmtNum(l.fw)}</td>
                   <td className="mono">{l.received_date || '—'}</td>
-                  <td className="mono">{l.expiry_date   || '—'}</td>
+                  <td className="mono">{l.expiry_date || '—'}</td>
                   <td style={{ textAlign: 'right' }}>
                     <RowMenu
-                      deleting={deleting === l.id}
+                      lot={l}
                       onEdit={() => startEdit(l)}
+                      onToggleStock={() => toggleStock(l)}
                       onDelete={() => deleteLot(l.id)}
                     />
                   </td>
