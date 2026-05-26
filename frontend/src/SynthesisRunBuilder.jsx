@@ -174,16 +174,27 @@ function parseNotes(notes) {
 
 // ── CSV generation ────────────────────────────────────────────────────────────
 
+// Strip PostgreSQL composite-literal escaping artefacts from stored token names
+const cleanModName = s => (s || '').replace(/^[\\"]+|[\\"]+$/g, '').trim()
+
+// Catalog lookup tolerant of stale tokens: tries exact, then stripped, then case-insensitive
+function findMod(modCatalog, name) {
+  const clean = cleanModName(name)
+  return modCatalog.find(m => m.canonical_name === name)
+      || modCatalog.find(m => m.canonical_name === clean)
+      || modCatalog.find(m => m.canonical_name.toLowerCase() === clean.toLowerCase())
+}
+
 // Replace /5Name/ /iName/ /3Name/ (and aliases) with assigned slot or AmMC6 (NHS ester route)
 function applyModPositions(seq, modPositions, modCatalog, modDelivery) {
   let result = seq
   for (const [canonicalName, pos] of Object.entries(modPositions)) {
     const delivery = modDelivery?.[canonicalName] ?? 'amidite'
     if (delivery === 'amidite' && pos == null) continue
-    const mod  = modCatalog.find(m => m.canonical_name === canonicalName)
+    const mod  = findMod(modCatalog, canonicalName)
     const names = [canonicalName, ...(mod?.aliases ? String(mod.aliases).split(',').map(a => a.trim()).filter(Boolean) : [])]
     for (const name of names) {
-      const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const esc = name.replace(/\s/g, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
       if (delivery === 'nhs_ester') {
         if (pos == null) continue
         result = result.replace(new RegExp(`\\/5${esc}\\/`, 'g'), String(pos))
@@ -278,8 +289,10 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns, onNavigateT
   const [selection, setSelection]   = useState({})
   const [modCatalog, setModCatalog] = useState([])
   const [fillMode, setFillMode]         = useState('cols')
-  const [groupMods, setGroupMods]       = useState(false)
   const [groupOrders, setGroupOrders]   = useState(false)
+  const [manualWellMap, setManualWellMap] = useState(null)
+  const [dragSrc, setDragSrc]           = useState(null)
+  const [highlightMod, setHighlightMod] = useState(null)
   const [dmtDefault, setDmtDefault]     = useState('DMT OFF')
   const [dmtOverrides, setDmtOverrides] = useState({})
   const [orderFilter, setOrderFilter]   = useState('')
@@ -402,19 +415,27 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns, onNavigateT
   // ── plate ─────────────────────────────────────────────────────────────────
 
   const plate = useMemo(
-    () => buildPlate(selection, machineNames, fillMode, groupMods, groupOrders),
-    [selection, machineNames, fillMode, groupMods, groupOrders]
+    () => buildPlate(selection, machineNames, fillMode, false, groupOrders),
+    [selection, machineNames, fillMode, groupOrders]
+  )
+
+  const effectiveWellMap = useMemo(
+    () => manualWellMap ?? plate.wellMap,
+    [manualWellMap, plate.wellMap]
   )
 
   // All unique modification canonical names found in the current plate wells
   // (independent of machine_position_required flag — any mod in a sequence needs a position)
   const allModNames = useMemo(() => {
     const names = new Set()
-    for (const well of Object.values(plate.wellMap))
-      for (const mod of well.item?.tokens?.modifications ?? [])
-        names.add(mod.canonical_name)
+    for (const well of Object.values(effectiveWellMap))
+      for (const mod of well.item?.tokens?.modifications ?? []) {
+        const clean = cleanModName(mod.canonical_name)
+        const entry = modCatalog.find(m => m.canonical_name.toLowerCase() === clean.toLowerCase())
+        names.add(entry ? entry.canonical_name : clean)
+      }
     return [...names].sort()
-  }, [plate.wellMap])
+  }, [effectiveWellMap, modCatalog])
 
   // Seed modPositions and modDelivery from allModNames; keep user choices
   useEffect(() => {
@@ -437,12 +458,46 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns, onNavigateT
   // Mods selected as NHS ester that also appear at internal positions in the current plate
   const nhsInternalWarnings = useMemo(() => {
     const warned = new Set()
-    for (const well of Object.values(plate.wellMap))
+    for (const well of Object.values(effectiveWellMap))
       for (const mod of well.item?.tokens?.modifications ?? [])
         if (modDelivery[mod.canonical_name] === 'nhs_ester' && mod.position_type === 'internal')
           warned.add(mod.canonical_name)
     return warned
-  }, [plate.wellMap, modDelivery])
+  }, [effectiveWellMap, modDelivery])
+
+  // ── drag-and-drop ─────────────────────────────────────────────────────────
+
+  function handleDragStart(e, pos) {
+    setDragSrc(pos)
+    e.dataTransfer.effectAllowed = 'move'
+  }
+
+  function handleDrop(e, tgt) {
+    e.preventDefault()
+    if (!dragSrc || dragSrc === tgt) { setDragSrc(null); return }
+    const base = effectiveWellMap
+    const srcWell = base[dragSrc]
+    const tgtWell = base[tgt]
+    setManualWellMap({
+      ...base,
+      [dragSrc]: { pos: dragSrc, item: tgtWell?.item ?? null, color: tgtWell?.color ?? null },
+      [tgt]:     { pos: tgt,     item: srcWell?.item ?? null, color: srcWell?.color ?? null },
+    })
+    setDmtOverrides(ov => {
+      const next = { ...ov }
+      const srcV = ov[dragSrc]
+      const tgtV = ov[tgt]
+      if (srcV !== undefined) next[tgt] = srcV; else delete next[tgt]
+      if (tgtV !== undefined) next[dragSrc] = tgtV; else delete next[dragSrc]
+      return next
+    })
+    setDragSrc(null)
+  }
+
+  function resetLayout() {
+    setManualWellMap(null)
+    setDmtOverrides({})
+  }
 
   // ── save + CSV ────────────────────────────────────────────────────────────
 
@@ -451,16 +506,19 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns, onNavigateT
     let result
     // ── Step 1: save run to DB ──────────────────────────────────────────────
     try {
-      const lines = Object.values(plate.wellMap)
+      const lines = Object.values(effectiveWellMap)
         .filter(w => w.item)
         .map(w => ({ order_line_id: w.item.order_line_id, plate_position: w.pos, dmt: dmtOverrides[w.pos] ?? dmtDefault }))
+      const missing = []
       const modMap = Object.entries(modPositions)
         .filter(([, pos]) => pos != null)
         .map(([canonical_name, synth_slot]) => {
-          const mod = modCatalog.find(m => m.canonical_name === canonical_name)
+          const mod = findMod(modCatalog, canonical_name)
+          if (!mod) { missing.push(canonical_name); return null }
           const delivery_method = modDelivery[canonical_name] ?? 'amidite'
-          return mod ? { modification_id: mod.id, synth_slot, delivery_method } : null
+          return { modification_id: mod.id, synth_slot, delivery_method }
         }).filter(Boolean)
+      if (missing.length) throw new Error(`Modifications not found in catalog: ${missing.join(', ')}. Check canonical names.`)
       result = await api.post('/runs', { ...runMeta, scale_nmol: runMeta.scale, lines, mod_map: modMap })
     } catch (err) {
       setSaveErr(err.response?.data?.error || err.message || 'Save failed')
@@ -616,7 +674,7 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns, onNavigateT
   const reagentsReady = REAGENTS.every(r => rForm[r.key]?.material_lot_id != null) && ammc6Ready && conjReady
   // Only require CPG for columns that actually contain sequences
   const activeCpgCols = [...new Set(
-    Object.values(plate.wellMap).filter(w => w.item).map(w => parseInt(w.pos.slice(1)))
+    Object.values(effectiveWellMap).filter(w => w.item).map(w => parseInt(w.pos.slice(1)))
   )]
   const cpgReady = activeCpgCols.every(c => cpgForm[c]?.material_lot_id != null)
 
@@ -636,7 +694,7 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns, onNavigateT
           </p>
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-          {step === 2 && !csvDone && <button className="btn-ghost" onClick={() => setStep(1)}>← Back</button>}
+          {step === 2 && !csvDone && <button className="btn-ghost" onClick={() => { setStep(1); setManualWellMap(null); setHighlightMod(null) }}>← Back</button>}
           {step === 1 && (
             <button className="btn-primary"
                     disabled={plate.totalUsed === 0 || overCapacity}
@@ -848,7 +906,7 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns, onNavigateT
                 {[['rows','By rows →'],['cols','By columns ↓']].map(([v, lbl]) => (
                   <button key={v}
                           className={`srb-opt-btn ${fillMode === v ? 'active' : ''}`}
-                          onClick={() => setFillMode(v)}>
+                          onClick={() => { setFillMode(v); setManualWellMap(null) }}>
                     {lbl}
                   </button>
                 ))}
@@ -865,16 +923,27 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns, onNavigateT
               </div>
               <div style={{ flexBasis: '100%', height: 0 }} />
               <label className="srb-checkbox">
-                <input type="checkbox" checked={groupMods}
-                       onChange={e => setGroupMods(e.target.checked)} />
-                Group modifications (modified rows on top, primers below)
-              </label>
-              <label className="srb-checkbox">
                 <input type="checkbox" checked={groupOrders}
-                       onChange={e => setGroupOrders(e.target.checked)} />
+                       onChange={e => { setGroupOrders(e.target.checked); setManualWellMap(null) }} />
                 Group by order (keep each order's oligos together)
               </label>
-
+              {manualWellMap && (
+                <button className="btn-ghost srb-reset-layout" onClick={resetLayout}>
+                  ↺ Reset layout
+                </button>
+              )}
+              {allModNames.length > 0 && (
+                <div className="srb-opt-group srb-highlight-group">
+                  <span className="srb-opt-label">Highlight mod</span>
+                  {allModNames.map(name => (
+                    <button key={name}
+                            className={`srb-opt-btn${highlightMod === name ? ' active' : ''}`}
+                            onClick={() => setHighlightMod(h => h === name ? null : name)}>
+                      {name}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -900,19 +969,36 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns, onNavigateT
                 <div key={`rh${row}`} className="srb-row-hdr">{row}</div>,
                 ...COLS.map(col => {
                   const pos  = `${row}${col}`
-                  const well = plate.wellMap[pos]
+                  const well = effectiveWellMap[pos]
                   const item = well?.item
+
+                  const hasHL = highlightMod && item?.tokens?.modifications?.some(
+                    m => cleanModName(m.canonical_name).toLowerCase() === highlightMod.toLowerCase()
+                  )
+                  const dimmed = highlightMod && item && !hasHL
+
+                  let wellStyle = {}
+                  if (item) {
+                    const dmtOn = (dmtOverrides[pos] ?? dmtDefault) === 'DMT ON'
+                    wellStyle = dmtOn
+                      ? { background: '#f9731628', borderColor: '#f97316' }
+                      : { background: (well.color ?? '#4b5563') + '28', borderColor: well.color ?? '#4b5563' }
+                    if (hasHL) wellStyle.outline = '2.5px solid #eab308'
+                    if (dimmed) wellStyle.opacity = 0.25
+                  }
+
                   return (
                     <div key={pos}
-                         className={`srb-well ${item ? 'srb-well-filled' : 'srb-well-empty'}`}
-                         style={item
-                           ? (dmtOverrides[pos] ?? dmtDefault) === 'DMT ON'
-                             ? { background: '#f9731628', borderColor: '#f97316' }
-                             : { background: well.color + '28', borderColor: well.color }
-                           : {}}
+                         draggable={!csvDone}
+                         className={`srb-well ${item ? 'srb-well-filled' : 'srb-well-empty'}${dragSrc === pos ? ' srb-well-dragging' : ''}`}
+                         style={wellStyle}
                          title={item
                            ? `${pos}: ${item.name}${item.copies > 1 ? ` ×${item.copyNum}/${item.copies}` : ''}\n${item.annotated_sequence ?? ''}`
-                           : pos}>
+                           : pos}
+                         onDragStart={e => handleDragStart(e, pos)}
+                         onDragOver={e => e.preventDefault()}
+                         onDrop={e => handleDrop(e, pos)}
+                         onDragEnd={() => setDragSrc(null)}>
                       <span className="srb-well-pos">{pos}</span>
                       {item && (
                         <>

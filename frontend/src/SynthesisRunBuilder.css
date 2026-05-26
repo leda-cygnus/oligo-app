@@ -391,6 +391,26 @@
   margin-top: 2px;
 }
 
+.srb-well-dragging {
+  opacity: 0.4;
+  cursor: grabbing;
+}
+
+.srb-well[draggable='true'] { cursor: grab; }
+.srb-well[draggable='true']:active { cursor: grabbing; }
+
+.srb-reset-layout {
+  font-size: 12px;
+  padding: 5px 12px;
+  color: var(--text-muted);
+  border-color: var(--border);
+}
+
+.srb-highlight-group {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
 .srb-csv-done {
   margin-bottom: 24px;
   padding: 16px;

@@ -123,12 +123,15 @@ function parseModArray(str) {
   }
   return elements.map(e => {
     const parts = (e.startsWith('(') ? e.slice(1, -1) : e).split(',')
+    // PostgreSQL composite literals backslash-escape and double-quote string fields;
+    // strip those artefacts so canonical_name is a plain string.
+    const unesc = s => s ? s.replace(/^[\\"]+|[\\"]+$/g, '').replace(/""/g, '"') : null
     return {
       raw_token:       parts[0] || null,
       position_type:   parts[1] || null,
       after_nt_index:  parts[2] ? parseInt(parts[2]) : null,
       display_order:   parts[3] ? parseInt(parts[3]) : null,
-      canonical_name:  parts[4] || null,
+      canonical_name:  unesc(parts[4]),
       modification_id: parts[5] || null,
       resolved:        parts[6] === 't',
     }
@@ -190,7 +193,8 @@ function applyModSubstitutions(seq, modSubs) {
       ...(sub.aliases ? String(sub.aliases).split(',').map(a => a.trim()).filter(Boolean) : []),
     ]
     for (const name of names) {
-      const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      // Strip spaces so "Atto 550" matches the IDT token "Atto550" after whitespace removal
+      const esc = name.replace(/\s/g, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
       result = result.replace(new RegExp(`\\/[5i3]?${esc}\\/`, 'g'), String(sub.synth_slot))
     }
   }
@@ -466,6 +470,7 @@ app.delete('/api/orders/:id', async (req, res) => {
       return res.status(409).json({ error: 'This order is part of an existing run and cannot be deleted.' })
     await client.query('BEGIN')
     try {
+      await client.query('UPDATE sequence SET order_id = NULL WHERE order_id = $1', [req.params.id])
       await client.query('DELETE FROM order_line WHERE order_id = $1', [req.params.id])
       await client.query('DELETE FROM "order" WHERE id = $1', [req.params.id])
       await client.query('COMMIT')
@@ -617,18 +622,25 @@ async function buildIdtString(client, sequence, modNotes) {
 
     // Find catalog entry by canonical name or any alias (case-insensitive)
     const r = await client.query(`
-      SELECT aliases FROM modification_catalog
+      SELECT canonical_name, aliases FROM modification_catalog
       WHERE canonical_name ILIKE $1
          OR EXISTS (SELECT 1 FROM unnest(aliases) a WHERE a ILIKE $1)
       LIMIT 1
     `, [modName])
-    if (!r.rows.length) continue
+    if (!r.rows.length) {
+      throw new Error(`Modification '${modName}' not found in modification_catalog — add it first`)
+    }
 
     // Pick the alias starting with the position character: "5xxx" / "3xxx" / "ixxx"
     const aliases = r.rows[0].aliases || []
     const prefixChar = pos === '5prime' ? '5' : pos === '3prime' ? '3' : 'i'
-    const token = aliases.find(a => a.startsWith(prefixChar)) || aliases[0]
-    if (!token) continue
+    const token = aliases.find(a => a.startsWith(prefixChar))
+    if (!token) {
+      const posLabel = pos === '5prime' ? "5'" : pos === '3prime' ? "3'" : 'internal'
+      throw new Error(
+        `Modification '${r.rows[0].canonical_name}' has no IDT alias for ${posLabel} position — add a '${prefixChar}…' alias to the catalog`
+      )
+    }
 
     if (pos === '5prime')      prefix = `/${token}/`
     else if (pos === '3prime') suffix = `/${token}/`
@@ -702,13 +714,17 @@ app.post('/api/orders', async (req, res) => {
         const parseResult = await client.query('SELECT * FROM parse_idt_sequence($1)', [idtStr])
         const tokens = buildTokens(parseResult.rows[0])
 
-        const seqResult = await client.query('SELECT insert_idt_sequence($1) AS id', [idtStr])
+        // One fresh row per oligo — no base-sequence deduplication.
+        const seqResult = await client.query(
+          'INSERT INTO sequence (raw_idt, bases, oligo_type) VALUES ($1, $2, $3) RETURNING id',
+          [idtStr, tokens?.bases ?? '', tokens?.oligo_type ?? 'DNA']
+        )
         const seqId = seqResult.rows[0].id
 
         const mw = tokens ? calcMolWeight(tokens.bases, tokens.oligo_type) : null
         await client.query(
-          'UPDATE sequence SET name = $1, order_id = $2, raw_idt = $3, tokens = $4, mol_weight = $5 WHERE id = $6',
-          [o.name || null, orderId, idtStr, tokens ? JSON.stringify(tokens) : null, mw, seqId]
+          'UPDATE sequence SET name = $1, order_id = $2, tokens = $3, mol_weight = $4 WHERE id = $5',
+          [o.name || null, orderId, tokens ? JSON.stringify(tokens) : null, mw, seqId]
         )
 
         const noteParts = [`Purification: ${o.purification}`]

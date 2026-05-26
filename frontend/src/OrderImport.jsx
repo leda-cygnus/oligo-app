@@ -25,19 +25,46 @@ function mapDelivery(raw) {
   return null
 }
 
-// Format a plain modification name from a TSV column into the
-// "5' Mod: <name>" structure that buildIdtString (backend) expects.
-// If the value already has a leading position indicator (5, 3, or "internal"),
-// it is left unchanged. Handles comma-separated lists.
-function formatModNotes(raw) {
-  if (!raw || !raw.trim()) return null
-  const parts = raw.split(',').map(p => {
-    const s = p.trim()
-    if (!s) return null
-    // Already has a position marker → pass through
-    if (/^[53]/i.test(s) || /^internal/i.test(s)) return s
-    return `5' Mod: ${s}`
-  }).filter(Boolean)
+// Extract the modification name from a string that may have a position prefix
+// like "5' Mod: Cy5" → "Cy5", or return the string as-is if no colon present.
+function stripModPrefix(s) {
+  const c = s.lastIndexOf(':')
+  return c >= 0 ? s.slice(c + 1).trim() : s.trim()
+}
+
+// Build modification_notes from dedicated position columns and/or a legacy
+// combined "Modification" column.  Dedicated columns take priority; the legacy
+// column is parsed as a fallback, stripping any "5' Mod: " prefix.
+function buildModNotes(rawMod, rawMod5, rawMod3, rawModInt1, rawModInt2, rawModInt3) {
+  let five  = rawMod5?.trim()    || ''
+  let three = rawMod3?.trim()    || ''
+  let int1  = rawModInt1?.trim() || ''
+  let int2  = rawModInt2?.trim() || ''
+  let int3  = rawModInt3?.trim() || ''
+
+  if (rawMod?.trim()) {
+    let intN = 0
+    for (const part of rawMod.split(',')) {
+      const s    = part.trim()
+      if (!s) continue
+      const name = stripModPrefix(s)
+      if      (/^5/i.test(s))       { if (!five)  five  = name }
+      else if (/^3/i.test(s))       { if (!three) three = name }
+      else if (/internal/i.test(s)) {
+        intN++
+        if      (intN === 1 && !int1) int1 = name
+        else if (intN === 2 && !int2) int2 = name
+        else if (intN === 3 && !int3) int3 = name
+      } else                        { if (!five)  five  = name }
+    }
+  }
+
+  const parts = []
+  if (five)  parts.push(`5' Mod: ${five}`)
+  if (three) parts.push(`3' Mod: ${three}`)
+  if (int1)  parts.push(`Internal Mod 1: ${int1}`)
+  if (int2)  parts.push(`Internal Mod 2: ${int2}`)
+  if (int3)  parts.push(`Internal Mod 3: ${int3}`)
   return parts.length ? parts.join(', ') : null
 }
 
@@ -59,6 +86,11 @@ function parseTsv(raw) {
 
   // Optional — detected but not required
   const modIdx   = headers.findIndex(h => h.includes('modif'))
+  const mod5Idx  = headers.findIndex(h => h.startsWith('5') && h.includes('mod'))
+  const mod3Idx  = headers.findIndex(h => h.startsWith('3') && h.includes('mod'))
+  const int1Idx  = headers.findIndex(h => h.startsWith('int') && h.includes('1'))
+  const int2Idx  = headers.findIndex(h => h.startsWith('int') && h.includes('2'))
+  const int3Idx  = headers.findIndex(h => h.startsWith('int') && h.includes('3'))
   const purifIdx = headers.findIndex(h => h.includes('purif'))
   const typeIdx  = headers.findIndex(h => h.includes('type') && !h.includes('oligo') && !h.includes('name'))
   // "Oligo Type" header → fall back to any header containing "type"
@@ -68,7 +100,12 @@ function parseTsv(raw) {
   )
 
   const cols = {
-    mod:      modIdx   >= 0,
+    mod:     modIdx  >= 0,
+    mod5:    mod5Idx >= 0,
+    mod3:    mod3Idx >= 0,
+    modInt1: int1Idx >= 0,
+    modInt2: int2Idx >= 0,
+    modInt3: int3Idx >= 0,
     purif:    purifIdx >= 0,
     type:     typeIdx2 >= 0,
     delivery: delivIdx >= 0,
@@ -89,10 +126,15 @@ function parseTsv(raw) {
     oligos.push({
       name,
       sequence,
-      rawMod:     modIdx   >= 0 ? (c[modIdx]   || '') : '',
-      rawPurif:   purifIdx >= 0 ? (c[purifIdx]  || '') : '',
-      rawType:    typeIdx2 >= 0 ? (c[typeIdx2]  || '') : '',
-      rawDelivery:delivIdx >= 0 ? (c[delivIdx]  || '') : '',
+      rawMod:      modIdx  >= 0 ? (c[modIdx]  || '') : '',
+      rawMod5:     mod5Idx >= 0 ? (c[mod5Idx] || '') : '',
+      rawMod3:     mod3Idx >= 0 ? (c[mod3Idx] || '') : '',
+      rawModInt1:  int1Idx >= 0 ? (c[int1Idx] || '') : '',
+      rawModInt2:  int2Idx >= 0 ? (c[int2Idx] || '') : '',
+      rawModInt3:  int3Idx >= 0 ? (c[int3Idx] || '') : '',
+      rawPurif:    purifIdx >= 0 ? (c[purifIdx]  || '') : '',
+      rawType:     typeIdx2 >= 0 ? (c[typeIdx2]  || '') : '',
+      rawDelivery: delivIdx >= 0 ? (c[delivIdx]  || '') : '',
     })
   }
 
@@ -152,8 +194,15 @@ function CustomerModal({ api, oligoCount, detectedCols, onConfirm, onCancel }) {
     onConfirm({ customer_name, customer_email, institute, scale, purif, formul })
   }
 
-  const anyPerRow = detectedCols.mod || detectedCols.purif || detectedCols.type || detectedCols.delivery
+  const anyPerRow = detectedCols.mod || detectedCols.mod5 || detectedCols.mod3 ||
+    detectedCols.modInt1 || detectedCols.modInt2 || detectedCols.modInt3 ||
+    detectedCols.purif || detectedCols.type || detectedCols.delivery
   const perRowLabels = [
+    detectedCols.mod5     && "5' Mod",
+    detectedCols.mod3     && "3' Mod",
+    detectedCols.modInt1  && 'Int1 Mod',
+    detectedCols.modInt2  && 'Int2 Mod',
+    detectedCols.modInt3  && 'Int3 Mod',
     detectedCols.mod      && 'Modification',
     detectedCols.purif    && 'Purification',
     detectedCols.type     && 'Oligo type',
@@ -363,7 +412,7 @@ export default function OrderImport({ api }) {
         const rowPurif  = o.rawPurif    || purif
         const rowFormul = (o.rawDelivery && mapDelivery(o.rawDelivery)) || formul
         const rowType   = mapOligoType(o.rawType)
-        const rowMod    = formatModNotes(o.rawMod)
+        const rowMod    = buildModNotes(o.rawMod, o.rawMod5, o.rawMod3, o.rawModInt1, o.rawModInt2, o.rawModInt3)
 
         return {
           name:               o.name,
@@ -446,13 +495,17 @@ export default function OrderImport({ api }) {
             className="seq-textarea oi-textarea oi-tsv-area"
             value={tsv}
             onChange={e => { setTsv(e.target.value); reset() }}
-            placeholder={"Paste rows copied from Excel. Expected columns (fuzzy match):\nName\tSequence\t[Modification]\t[Purification]\t[Oligo Type]\t[Delivery state]\n\nColumn order and extra columns don't matter. Optional columns are used per-row when present."}
+            placeholder={"Paste rows copied from Excel. Expected columns (fuzzy match):\nName\tSequence\t[5' Mod]\t[3' Mod]\t[Int1 Mod]\t[Int2 Mod]\t[Int3 Mod]\t[Purification]\t[Oligo Type]\t[Delivery]\n\nColumn order and extra columns don't matter. Optional columns are used per-row when present."}
             rows={8}
             spellCheck={false}
           />
           <div className="oi-tsv-hint">
             Must include <span className="mono">Name</span> and <span className="mono">Sequence</span> columns.
-            Also auto-detected when present: <span className="mono">Modification</span>, <span className="mono">Purification</span>, <span className="mono">Oligo Type</span>, <span className="mono">Delivery state</span>.
+            Also auto-detected when present:{' '}
+            <span className="mono">5' Mod</span>, <span className="mono">3' Mod</span>,{' '}
+            <span className="mono">Int1–3 Mod</span>, <span className="mono">Modification</span>,{' '}
+            <span className="mono">Purification</span>, <span className="mono">Oligo Type</span>,{' '}
+            <span className="mono">Delivery</span>.
           </div>
         </div>
       )}
