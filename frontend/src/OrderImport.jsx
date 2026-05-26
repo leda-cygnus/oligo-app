@@ -7,43 +7,104 @@ const SCALE_OPTIONS    = [25, 50, 100, 200, 1000]
 const PURIF_OPTIONS    = ['Standard Desalt', 'HPLC', 'PAGE', 'RNase-free HPLC']
 const FORMUL_OPTIONS   = ['Dry', 'TE Buffer', 'Water']
 
+// ── TSV helpers ───────────────────────────────────────────────────────────────
+
+function mapOligoType(raw) {
+  if (!raw) return 'DNA'
+  const r = raw.toLowerCase()
+  if (r.includes('rna')) return 'RNA'
+  return 'DNA'
+}
+
+function mapDelivery(raw) {
+  if (!raw) return null
+  const r = raw.toLowerCase()
+  if (r.includes('lyophil') || r.includes('dry') || r.includes('freeze')) return 'Dry'
+  if (r.includes('te')) return 'TE Buffer'
+  if (r.includes('water') || r.includes('h2o')) return 'Water'
+  return null
+}
+
+// Format a plain modification name from a TSV column into the
+// "5' Mod: <name>" structure that buildIdtString (backend) expects.
+// If the value already has a leading position indicator (5, 3, or "internal"),
+// it is left unchanged. Handles comma-separated lists.
+function formatModNotes(raw) {
+  if (!raw || !raw.trim()) return null
+  const parts = raw.split(',').map(p => {
+    const s = p.trim()
+    if (!s) return null
+    // Already has a position marker → pass through
+    if (/^[53]/i.test(s) || /^internal/i.test(s)) return s
+    return `5' Mod: ${s}`
+  }).filter(Boolean)
+  return parts.length ? parts.join(', ') : null
+}
+
 // ── TSV fuzzy parser ──────────────────────────────────────────────────────────
 function parseTsv(raw) {
   const lines = raw.trim().split(/\r?\n/).filter(l => l.trim())
-  if (lines.length < 2) return { oligos: null, error: 'Need at least a header row and one data row.' }
+  if (lines.length < 2) return { oligos: null, cols: {}, error: 'Need at least a header row and one data row.' }
 
   const headers = lines[0].split('\t').map(h => h.trim().toLowerCase())
 
-  const nameIdx = headers.findIndex(h =>
+  // Required
+  const nameIdx  = headers.findIndex(h =>
     h.includes('name') || h.includes('primer') || h.includes('oligo') || h.includes('id')
   )
-  const seqIdx = headers.findIndex(h =>
-    h.includes('seq')
+  const seqIdx   = headers.findIndex(h => h.includes('seq'))
+
+  if (nameIdx === -1) return { oligos: null, cols: {}, error: 'Could not find a Name column (expected header containing "name", "primer", or "oligo").' }
+  if (seqIdx  === -1) return { oligos: null, cols: {}, error: 'Could not find a Sequence column (expected header containing "seq").' }
+
+  // Optional — detected but not required
+  const modIdx   = headers.findIndex(h => h.includes('modif'))
+  const purifIdx = headers.findIndex(h => h.includes('purif'))
+  const typeIdx  = headers.findIndex(h => h.includes('type') && !h.includes('oligo') && !h.includes('name'))
+  // "Oligo Type" header → fall back to any header containing "type"
+  const typeIdx2 = typeIdx === -1 ? headers.findIndex(h => h.includes('type')) : typeIdx
+  const delivIdx = headers.findIndex(h =>
+    h.includes('deliv') || h.includes('state') || h.includes('formul')
   )
 
-  if (nameIdx === -1) return { oligos: null, error: 'Could not find a Name column (expected header containing "name", "primer", or "oligo").' }
-  if (seqIdx  === -1) return { oligos: null, error: 'Could not find a Sequence column (expected header containing "seq").' }
+  const cols = {
+    mod:      modIdx   >= 0,
+    purif:    purifIdx >= 0,
+    type:     typeIdx2 >= 0,
+    delivery: delivIdx >= 0,
+  }
 
   const oligos = []
   for (let i = 1; i < lines.length; i++) {
-    const cols = lines[i].split('\t').map(c => c.trim())
-    const name     = cols[nameIdx] || ''
-    const sequence = (cols[seqIdx] || '').replace(/\s/g, '').toUpperCase()
+    const c = lines[i].split('\t').map(s => s.trim())
+    const name     = c[nameIdx]  || ''
+    const sequence = (c[seqIdx]  || '').replace(/\s/g, '').toUpperCase()
+    // Skip sub-header rows or empty rows
     if (!name && !sequence) continue
-    if (!name)     return { oligos: null, error: `Row ${i + 1}: missing name.` }
-    if (!sequence) return { oligos: null, error: `Row ${i + 1}: missing sequence.` }
-    oligos.push({ name, sequence })
+    if (!name)     return { oligos: null, cols, error: `Row ${i + 1}: missing name.` }
+    if (!sequence) return { oligos: null, cols, error: `Row ${i + 1}: missing sequence.` }
+    // Skip rows where sequence column is clearly a sub-header (contains no ACGTU letters)
+    if (!sequence.replace(/[^ACGTURYWSKMBDHVN]/gi, '').length) continue
+
+    oligos.push({
+      name,
+      sequence,
+      rawMod:     modIdx   >= 0 ? (c[modIdx]   || '') : '',
+      rawPurif:   purifIdx >= 0 ? (c[purifIdx]  || '') : '',
+      rawType:    typeIdx2 >= 0 ? (c[typeIdx2]  || '') : '',
+      rawDelivery:delivIdx >= 0 ? (c[delivIdx]  || '') : '',
+    })
   }
 
-  if (!oligos.length) return { oligos: null, error: 'No data rows found.' }
-  return { oligos, error: null }
+  if (!oligos.length) return { oligos: null, cols, error: 'No data rows found.' }
+  return { oligos, cols, error: null }
 }
 
 // ── CustomerModal ─────────────────────────────────────────────────────────────
-function CustomerModal({ api, oligoCount, onConfirm, onCancel }) {
+function CustomerModal({ api, oligoCount, detectedCols, onConfirm, onCancel }) {
   const [customers, setCustomers]     = useState([])
   const [loadingCust, setLoadingCust] = useState(true)
-  const [mode, setMode]               = useState('existing') // 'existing' | 'new'
+  const [mode, setMode]               = useState('existing')
   const [search, setSearch]           = useState('')
   const [selectedId, setSelectedId]   = useState(null)
 
@@ -91,16 +152,48 @@ function CustomerModal({ api, oligoCount, onConfirm, onCancel }) {
     onConfirm({ customer_name, customer_email, institute, scale, purif, formul })
   }
 
+  const anyPerRow = detectedCols.mod || detectedCols.purif || detectedCols.type || detectedCols.delivery
+  const perRowLabels = [
+    detectedCols.mod      && 'Modification',
+    detectedCols.purif    && 'Purification',
+    detectedCols.type     && 'Oligo type',
+    detectedCols.delivery && 'Formulation',
+  ].filter(Boolean)
+
   return (
     <div className="modal-backdrop" onClick={onCancel}>
       <div className="modal-box oi-cust-modal" onClick={e => e.stopPropagation()}>
         <h3 style={{ marginBottom: 4 }}>Customer &amp; order details</h3>
-        <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 20 }}>
-          {oligoCount} oligo{oligoCount !== 1 ? 's' : ''} parsed from spreadsheet — fill in the missing details to complete the import.
+        <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: anyPerRow ? 8 : 20 }}>
+          {oligoCount} oligo{oligoCount !== 1 ? 's' : ''} parsed — fill in the missing details to complete the import.
         </p>
 
+        {/* ── Per-row columns detected ── */}
+        {anyPerRow && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap',
+            marginBottom: 16, padding: '8px 10px',
+            background: 'rgba(99,179,237,0.08)', border: '1px solid rgba(99,179,237,0.2)',
+            borderRadius: 'var(--radius)', fontSize: 12,
+          }}>
+            <span style={{ color: 'var(--text-dim)' }}>Detected per-row:</span>
+            {perRowLabels.map(l => (
+              <span key={l} style={{
+                padding: '2px 8px', borderRadius: 99,
+                background: 'rgba(99,179,237,0.15)', color: 'var(--accent)',
+                fontWeight: 500,
+              }}>{l}</span>
+            ))}
+            <span style={{ color: 'var(--text-dim)', marginLeft: 4 }}>
+              — defaults below are used only where not specified in the spreadsheet
+            </span>
+          </div>
+        )}
+
         {/* ── Order defaults ── */}
-        <div className="oi-cust-section-label">Order defaults</div>
+        <div className="oi-cust-section-label">
+          Order defaults{anyPerRow ? ' (fallback)' : ''}
+        </div>
         <div className="oi-cust-defaults">
           <div className="field">
             <label>Scale (nmol)</label>
@@ -109,14 +202,16 @@ function CustomerModal({ api, oligoCount, onConfirm, onCancel }) {
             </select>
           </div>
           <div className="field">
-            <label>Purification</label>
-            <select value={purif} onChange={e => setPurif(e.target.value)}>
+            <label>Purification{detectedCols.purif ? ' ↙ per-row' : ''}</label>
+            <select value={purif} onChange={e => setPurif(e.target.value)}
+                    style={detectedCols.purif ? { opacity: 0.55 } : {}}>
               {PURIF_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}
             </select>
           </div>
           <div className="field">
-            <label>Formulation</label>
-            <select value={formul} onChange={e => setFormul(e.target.value)}>
+            <label>Formulation{detectedCols.delivery ? ' ↙ per-row' : ''}</label>
+            <select value={formul} onChange={e => setFormul(e.target.value)}
+                    style={detectedCols.delivery ? { opacity: 0.55 } : {}}>
               {FORMUL_OPTIONS.map(f => <option key={f} value={f}>{f}</option>)}
             </select>
           </div>
@@ -203,6 +298,7 @@ export default function OrderImport({ api }) {
   const [source, setSource] = useState('website')
   const [showCustModal, setShowCustModal] = useState(false)
   const [tsvOligos, setTsvOligos]         = useState(null)
+  const [tsvCols, setTsvCols]             = useState({})
   const fileRef = useRef()
 
   function reset() { setState(EMPTY_STATE) }
@@ -213,6 +309,7 @@ export default function OrderImport({ api }) {
     setFile(null)
     setShowCustModal(false)
     setTsvOligos(null)
+    setTsvCols({})
     if (fileRef.current) fileRef.current.value = ''
   }
 
@@ -222,9 +319,10 @@ export default function OrderImport({ api }) {
 
     if (mode === 'excel') {
       if (!tsv.trim()) return setState({ ...EMPTY_STATE, error: 'Paste spreadsheet data first.' })
-      const { oligos, error } = parseTsv(tsv)
+      const { oligos, cols, error } = parseTsv(tsv)
       if (error) return setState({ ...EMPTY_STATE, error })
       setTsvOligos(oligos)
+      setTsvCols(cols)
       setState({ ...EMPTY_STATE })
       setShowCustModal(true)
       return
@@ -260,17 +358,25 @@ export default function OrderImport({ api }) {
       address:        null,
       order_date:     null,
       raw_text:       '',
-      oligos: tsvOligos.map((o, i) => ({
-        name:               o.name,
-        oligo_type:         'DNA',
-        sequence:           o.sequence,
-        scale_nmol:         scale,
-        purification:       purif,
-        formulation:        formul,
-        modification_notes: null,
-        researcher:         null,
-        line_number:        i + 1,
-      })),
+      oligos: tsvOligos.map((o, i) => {
+        // Per-row values override the modal defaults where found
+        const rowPurif  = o.rawPurif    || purif
+        const rowFormul = (o.rawDelivery && mapDelivery(o.rawDelivery)) || formul
+        const rowType   = mapOligoType(o.rawType)
+        const rowMod    = formatModNotes(o.rawMod)
+
+        return {
+          name:               o.name,
+          oligo_type:         rowType,
+          sequence:           o.sequence,
+          scale_nmol:         scale,
+          purification:       rowPurif,
+          formulation:        rowFormul,
+          modification_notes: rowMod,
+          researcher:         null,
+          line_number:        i + 1,
+        }
+      }),
     }
     setState({ ...EMPTY_STATE, parsed })
   }
@@ -340,12 +446,13 @@ export default function OrderImport({ api }) {
             className="seq-textarea oi-textarea oi-tsv-area"
             value={tsv}
             onChange={e => { setTsv(e.target.value); reset() }}
-            placeholder={"Paste rows copied from Excel. Expected columns (fuzzy match):\nPrimer Name\tSequence\npRAS7.1_NheI_F\tTTGGCTCCGGTGCCC…"}
+            placeholder={"Paste rows copied from Excel. Expected columns (fuzzy match):\nName\tSequence\t[Modification]\t[Purification]\t[Oligo Type]\t[Delivery state]\n\nColumn order and extra columns don't matter. Optional columns are used per-row when present."}
             rows={8}
             spellCheck={false}
           />
           <div className="oi-tsv-hint">
-            Copy any range from Excel that includes a header row with <span className="mono">Name</span> and <span className="mono">Sequence</span> columns — column order and extra columns don't matter.
+            Must include <span className="mono">Name</span> and <span className="mono">Sequence</span> columns.
+            Also auto-detected when present: <span className="mono">Modification</span>, <span className="mono">Purification</span>, <span className="mono">Oligo Type</span>, <span className="mono">Delivery state</span>.
           </div>
         </div>
       )}
@@ -429,6 +536,7 @@ export default function OrderImport({ api }) {
         <CustomerModal
           api={api}
           oligoCount={tsvOligos?.length ?? 0}
+          detectedCols={tsvCols}
           onConfirm={handleCustomerConfirm}
           onCancel={() => { setShowCustModal(false); setState(EMPTY_STATE) }}
         />
