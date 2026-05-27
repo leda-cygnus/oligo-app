@@ -5,6 +5,7 @@ const TYPE_TABS = [
   { key: 'amidite', label: 'Amidites' },
   { key: 'reagent', label: 'Reagents' },
   { key: 'cpg',     label: 'CPG' },
+  { key: 'nhs',     label: 'NHS' },
 ]
 
 const REAGENT_CANONICALS = ['wash', 'oxidizer', 'cap_a', 'cap_b', 'activator']
@@ -15,14 +16,14 @@ const BASE_CANONICALS = ['dA', 'dC', 'dG', 'dT', 'rA', 'rC', 'rG', 'rU']
 const EMPTY_FORM = {
   material_type: 'amidite', canonical_name: '', name: '', cas_number: '',
   catalogue_number: '', lot_number: '',
-  manufacturer: '', vendor: '', mw: '', fw: '', received_date: '', expiry_date: '',
+  manufacturer: '', vendor: '', mw: '', fw: '', mw_addition: '', received_date: '', expiry_date: '',
 }
 
 // Columns that support sorting
 const SORT_COLS = [
   'material_type', 'canonical_name', 'name', 'cas_number',
   'catalogue_number', 'lot_number', 'manufacturer', 'vendor',
-  'mw', 'fw', 'received_date', 'expiry_date',
+  'mw', 'fw', 'mw_addition',
 ]
 
 function fmtNum(v) {
@@ -40,8 +41,9 @@ function lotToForm(l) {
     lot_number:       l.lot_number       || '',
     manufacturer:     l.manufacturer     || '',
     vendor:           l.vendor           || '',
-    mw:               l.mw  != null ? String(l.mw)  : '',
-    fw:               l.fw  != null ? String(l.fw)  : '',
+    mw:               l.mw          != null ? String(l.mw)          : '',
+    fw:               l.fw          != null ? String(l.fw)          : '',
+    mw_addition:      l.mw_addition  != null ? String(l.mw_addition) : '',
     received_date:    l.received_date    || '',
     expiry_date:      l.expiry_date      || '',
   }
@@ -50,8 +52,9 @@ function lotToForm(l) {
 function buildBody(form) {
   return {
     ...form,
-    mw:               form.mw ? parseFloat(form.mw) : null,
-    fw:               form.fw ? parseFloat(form.fw) : null,
+    mw:               form.mw          ? parseFloat(form.mw)          : null,
+    fw:               form.fw          ? parseFloat(form.fw)          : null,
+    mw_addition:      form.mw_addition ? parseFloat(form.mw_addition) : null,
     canonical_name:   form.canonical_name.trim()   || null,
     name:             form.name.trim()             || null,
     cas_number:       form.cas_number.trim()       || null,
@@ -67,9 +70,10 @@ function sortRows(rows, key, dir) {
   if (!key) return rows
   return [...rows].sort((a, b) => {
     let va = a[key], vb = b[key]
-    if (va == null) va = key === 'mw' || key === 'fw' ? -Infinity : ''
-    if (vb == null) vb = key === 'mw' || key === 'fw' ? -Infinity : ''
-    if (key === 'mw' || key === 'fw') {
+    const numeric = key === 'mw' || key === 'fw' || key === 'mw_addition'
+    if (va == null) va = numeric ? -Infinity : ''
+    if (vb == null) vb = numeric ? -Infinity : ''
+    if (numeric) {
       va = parseFloat(va) || 0
       vb = parseFloat(vb) || 0
       return dir === 'asc' ? va - vb : vb - va
@@ -101,13 +105,16 @@ function LotForm({ form, setF, onSave, onCancel, saving, saveErr, submitLabel, m
             <option value="amidite">Amidite</option>
             <option value="reagent">Reagent</option>
             <option value="cpg">CPG</option>
+            <option value="nhs">NHS</option>
           </select>
         </div>
 
         {/* ── Modification / linking key ── */}
         <div className="field">
           <label>
-            {form.material_type === 'reagent' ? 'Reagent type' : 'Modification'}
+            {form.material_type === 'reagent' ? 'Reagent type'
+              : form.material_type === 'nhs'  ? 'Modification'
+              : 'Modification'}
           </label>
           {form.material_type === 'reagent' ? (
             <select className="filter-input" value={form.canonical_name}
@@ -120,19 +127,25 @@ function LotForm({ form, setF, onSave, onCancel, saving, saveErr, submitLabel, m
               <input
                 list={dlId}
                 value={form.canonical_name}
-                placeholder={form.material_type === 'amidite' ? 'e.g. dA, FAM, /5Phos/' : 'e.g. dT-CPG 500 Å'}
+                placeholder={
+                  form.material_type === 'amidite' ? 'e.g. dA, FAM, /5Phos/'
+                    : form.material_type === 'nhs' ? 'e.g. Cy5, Atto 550'
+                    : 'e.g. dT-CPG 500 Å'
+                }
                 onChange={e => setF('canonical_name', e.target.value)}
               />
-              {form.material_type === 'amidite' && (
+              {(form.material_type === 'amidite' || form.material_type === 'nhs') && (
                 <datalist id={dlId}>
-                  {BASE_CANONICALS.map(n => <option key={n} value={n} />)}
+                  {form.material_type === 'amidite' && BASE_CANONICALS.map(n => <option key={n} value={n} />)}
                   {modSuggestions.map(n => <option key={n} value={n} />)}
                 </datalist>
               )}
             </>
           )}
           <span style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>
-            Used to link this lot to synthesis run slots
+            {form.material_type === 'nhs'
+              ? 'Matches modification name for conjugate MW lookup'
+              : 'Used to link this lot to synthesis run slots'}
           </span>
         </div>
 
@@ -193,6 +206,20 @@ function LotForm({ form, setF, onSave, onCancel, saving, saveErr, submitLabel, m
           <input type="number" step="0.0001" value={form.fw} placeholder="—"
                  onChange={e => setF('fw', e.target.value)} />
         </div>
+
+        {/* ── MW addition — shown for amidite and nhs ── */}
+        {(form.material_type === 'amidite' || form.material_type === 'nhs') && (
+          <div className="field">
+            <label>MW addition (Da)</label>
+            <input type="number" step="0.0001" value={form.mw_addition} placeholder="—"
+                   onChange={e => setF('mw_addition', e.target.value)} />
+            <span style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>
+              {form.material_type === 'nhs'
+                ? 'Net MW added to oligo per conjugation event'
+                : 'Net MW added to oligo per coupling'}
+            </span>
+          </div>
+        )}
 
         {/* ── Dates ── */}
         <div className="field">
@@ -364,14 +391,12 @@ export default function MaterialLots({ api }) {
 
   function handleSort(col) {
     if (!SORT_COLS.includes(col)) return
-    setSortKey(prev => {
-      if (prev === col) {
-        setSortDir(d => d === 'asc' ? 'desc' : 'asc')
-        return col
-      }
+    if (sortKey === col) {
+      setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortKey(col)
       setSortDir('asc')
-      return col
-    })
+    }
   }
 
   function setAddF(field, val)  { setAddForm(f => ({ ...f, [field]: val })) }
@@ -521,8 +546,7 @@ export default function MaterialLots({ api }) {
                 <SortTh col="vendor"           {...thProps}>Vendor</SortTh>
                 <SortTh col="mw"               {...thProps}>MW (Da)</SortTh>
                 <SortTh col="fw"               {...thProps}>FW</SortTh>
-                <SortTh col="received_date"    {...thProps}>Received</SortTh>
-                <SortTh col="expiry_date"      {...thProps}>Expiry</SortTh>
+                <SortTh col="mw_addition"      {...thProps}>Conj. FW</SortTh>
                 <th></th>
               </tr>
             </thead>
@@ -534,7 +558,11 @@ export default function MaterialLots({ api }) {
                       background: editingId === l.id ? 'var(--surface)' : undefined,
                     }}>
                   <td>
-                    <span className={`tag ${l.material_type === 'amidite' ? 'rna' : l.material_type === 'cpg' ? 'mixed' : ''}`}>
+                    <span className={`tag ${
+                      l.material_type === 'amidite' ? 'rna'
+                        : l.material_type === 'cpg'  ? 'mixed'
+                        : l.material_type === 'nhs'  ? 'dna'
+                        : ''}`}>
                       {l.material_type}
                     </span>
                   </td>
@@ -551,8 +579,7 @@ export default function MaterialLots({ api }) {
                   <td>{l.vendor || '—'}</td>
                   <td className="mono">{fmtNum(l.mw)}</td>
                   <td className="mono">{fmtNum(l.fw)}</td>
-                  <td className="mono">{l.received_date || '—'}</td>
-                  <td className="mono">{l.expiry_date || '—'}</td>
+                  <td className="mono">{fmtNum(l.mw_addition)}</td>
                   <td style={{ textAlign: 'right' }}>
                     <RowMenu
                       lot={l}

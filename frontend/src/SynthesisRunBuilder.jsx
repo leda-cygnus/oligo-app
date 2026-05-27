@@ -1048,12 +1048,12 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns, onNavigateT
                       <button
                         className={`srb-opt-btn${delivery === 'nhs_ester' ? ' active' : ''}`}
                         onClick={() => setModDelivery(d => ({ ...d, [name]: 'nhs_ester' }))}>
-                        NHS Ester
+                        NHS
                       </button>
                     </div>
                     {delivery === 'nhs_ester' && (
                       <div className="srb-nhs-label">
-                        → AmMC6 slot
+                        → AminoMod C6 slot
                         {nhsInternalWarnings.has(name) && (
                           <span className="srb-nhs-warn"> ⚠ internal pos unchanged</span>
                         )}
@@ -1154,7 +1154,7 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns, onNavigateT
                   {nhsEsterMods.length > 0 && (
                     <>
                       <div className="rl-section-hdr" style={{ borderTop: '1px solid var(--border)', borderBottom: 'none' }}>
-                        <h3>AmMC6 (NHS Ester Amidite)</h3>
+                        <h3>AminoMod C6</h3>
                       </div>
                       <table className="rl-rtable" style={{ margin: '0 14px 14px' }}>
                         <thead><tr><th>Lot #</th><th>Solvent lot</th><th>Date replaced</th><th>Replaced by</th></tr></thead>
@@ -1168,10 +1168,10 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns, onNavigateT
                         </tbody>
                       </table>
                       <div className="rl-section-hdr" style={{ borderTop: '1px solid var(--border)', borderBottom: 'none' }}>
-                        <h3>NHS Ester Conjugation</h3>
+                        <h3>AminoMod C6 Conjugation</h3>
                       </div>
                       <table className="rl-rtable" style={{ margin: '0 14px 14px' }}>
-                        <thead><tr><th>Modification</th><th>NHS ester lot</th><th>Date conjugated</th><th>Operator</th><th>Notes</th></tr></thead>
+                        <thead><tr><th>Modification</th><th>AminoMod C6 lot</th><th>Date conjugated</th><th>Operator</th><th>Notes</th></tr></thead>
                         <tbody>
                           {nhsEsterMods.map(n => (
                             <tr key={n}>
@@ -1317,7 +1317,7 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns, onNavigateT
                   {nhsEsterMods.length > 0 && (
                     <>
                       <div className="rl-section-hdr" style={{ borderTop: '1px solid var(--border)', borderBottom: 'none' }}>
-                        <h3>AmMC6 (NHS Ester Amidite)</h3>
+                        <h3>AminoMod C6</h3>
                       </div>
                       <table className="rl-rtable" style={{ margin: '0 14px 14px' }}>
                         <thead>
@@ -1334,7 +1334,7 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns, onNavigateT
                                         setAmmc6Form(f => ({ ...f, material_lot_id: id, lot_number: lot?.lot_number ?? '' }))
                                       }}>
                                 <option value="">— select lot —</option>
-                                {materialLots.filter(l => l.material_type === 'amidite' && l.canonical_name === 'AmMC6').map(l => (
+                                {materialLots.filter(l => l.material_type === 'amidite' && l.canonical_name === 'AminoMod C6').map(l => (
                                   <option key={l.id} value={l.id}>{l.lot_number}{l.provider ? ` (${l.provider})` : ''}</option>
                                 ))}
                               </select>
@@ -1349,12 +1349,12 @@ export default function SynthesisRunBuilder({ api, onNavigateToRuns, onNavigateT
                         </tbody>
                       </table>
                       <div className="rl-section-hdr" style={{ borderTop: '1px solid var(--border)', borderBottom: 'none' }}>
-                        <h3>NHS Ester Conjugation</h3>
+                        <h3>AminoMod C6 Conjugation</h3>
                       </div>
                       <div style={{ padding: '0 14px 14px' }}>
                         <table className="rl-rtable">
                           <thead>
-                            <tr><th>Modification</th><th>NHS ester lot</th><th>Date conjugated</th><th>Operator</th><th>Notes</th></tr>
+                            <tr><th>Modification</th><th>AminoMod C6 lot</th><th>Date conjugated</th><th>Operator</th><th>Notes</th></tr>
                           </thead>
                           <tbody>
                             {nhsEsterMods.map(n => (

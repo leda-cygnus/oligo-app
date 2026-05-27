@@ -28,7 +28,7 @@ Internal lab management system for oligo synthesis operations.
 oligo-app/
 ├── backend/        # Express API server (server.js, idgen.js)
 ├── frontend/       # React app (Vite)
-└── db/             # SQL migration files (migrate_001.sql … migrate_021.sql)
+└── db/             # SQL migration files (migrate_001.sql … migrate_026.sql)
 ```
 
 ## Setup
@@ -45,7 +45,7 @@ Run all migrations in order against your PostgreSQL instance:
 ```bash
 psql -h localhost -U <user> -d oligosynth -f db/migrate_001.sql
 psql -h localhost -U <user> -d oligosynth -f db/migrate_002.sql
-# ... repeat through migrate_021.sql
+# ... repeat through migrate_026.sql
 ```
 
 ### Backend
@@ -130,8 +130,11 @@ Each lot entry stores:
 | `lot_number` | Manufacturer lot number |
 | `manufacturer` / `vendor` | Source |
 | `mw` / `fw` | Molecular weight / formula weight (Da) |
+| `mw_addition` | Net MW added to the oligo per coupling/conjugation event (shown as **Conj. FW** in the table) |
 
 Multiple lots with different names or lot numbers can share the same `canonical_name`.
+
+The material lots table supports click-to-sort on all columns; clicking the same column header a second time reverses the sort direction. Received and expiry dates are stored but not shown in the table view (still editable in the form).
 
 ## NHS ester modifications
 
@@ -142,12 +145,19 @@ When building a synthesis run, each modification can be assigned a delivery meth
 
 For NHS ester mods the Run Builder and Run Detail both show:
 
-- **AmMC6 reagent lot** — the C6-amino linker amidite used during synthesis
-- **Conjugation section** — one row per NHS ester mod with fields: NHS ester reagent lot, date conjugated, operator, notes
+- **AminoMod C6 reagent lot** — the C6-amino linker amidite used during synthesis
+- **Conjugation section** — one row per NHS ester mod with fields: material lot (for MW lookup), NHS ester reagent lot, date conjugated, operator, notes
 
-Schema: `migrate_020.sql` adds `delivery_method` to `synthesis_run_mod_map` and creates the `synthesis_run_conjugation` table.
+The conjugation section has its own **Save conjugation** button that calls `PUT /api/runs/:id/conjugation` independently of the main reagents save.
+
+Schema notes:
+- `migrate_020.sql` adds `delivery_method` to `synthesis_run_mod_map` and creates `synthesis_run_conjugation`
+- `migrate_024.sql` drops the unique constraint on `(run_id, synth_slot)` so multiple NHS ester dyes can share the same aminomodifier slot
+- `migrate_025.sql` adds `material_lot_id` to `synthesis_run_conjugation` for conjugate MW lookup
 
 ## Notes
 
 - `backend/logo.png` is used in generated shipping label and quote documents
 - The `db/` folder contains all schema migrations; run them sequentially on a fresh database to build the full schema
+- `migrate_023.sql` drops the unique index on sequence checksum so multiple oligos with the same base sequence (e.g. same sequence with different modifications) can coexist in one order
+- `migrate_026.sql` expands the `material_type` check constraint to include `nhs` (NHS ester reagent lots)

@@ -65,6 +65,17 @@ function seedResult(l) {
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
+function countModInSeq(seq, canonicalName, aliases) {
+  const names = [canonicalName, ...(aliases ? String(aliases).split(',').map(a => a.trim()).filter(Boolean) : [])]
+  let count = 0
+  for (const name of names) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const matches = (seq || '').match(new RegExp(`\\/[5i3]?${escaped}\\/`, 'g'))
+    if (matches) count += matches.length
+  }
+  return count
+}
+
 function colMajorSort(lines) {
   return [...lines].sort((a, b) => {
     const colA = parseInt(a.plate_position.slice(1)), rowA = a.plate_position[0]
@@ -204,7 +215,10 @@ function RunDetail({ api, runId, onBack }) {
   const [modLotIds, setModLotIds]       = useState({})
   const [saving, setSaving]       = useState(false)
   const [saveMsg, setSaveMsg]     = useState('')
-  const [conjForm, setConjForm]   = useState({})  // canonical_name → { reagent_lot, date_conjugated, operator, notes }
+  const [conjForm, setConjForm]     = useState({})  // canonical_name → { material_lot_id, reagent_lot, date_conjugated, operator, notes }
+  const [conjSaving, setConjSaving] = useState(false)
+  const [conjMsg,    setConjMsg]    = useState('')
+  const [conjLocked, setConjLocked] = useState(false)
 
   // results
   const [results, setResults]               = useState({})
@@ -252,12 +266,15 @@ function RunDetail({ api, runId, onBack }) {
           }
         }
         // Seed conjugation form
+        const conjData = reagentData.conjugation || []
         setConjForm(Object.fromEntries(
-          ((reagentData.conjugation || [])).map(c => [c.modification_name, {
+          conjData.map(c => [c.modification_name, {
+            material_lot_id: c.material_lot_id || null,
             reagent_lot: c.reagent_lot || '', date_conjugated: c.date_conjugated || '',
             operator: c.operator || '', notes: c.notes || '',
           }])
         ))
+        setConjLocked(conjData.some(c => c.reagent_lot || c.date_conjugated) && reagentData.carryover_from === null)
         // Also seed modLotIds for mod_map MW lookup
         const mli = {}
         for (const mm of (detail.mod_map || []))
@@ -316,10 +333,11 @@ function RunDetail({ api, runId, onBack }) {
       ]
       const conjugation = nhsMods.map(mm => ({
         modification_name: mm.canonical_name,
-        reagent_lot:     conjForm[mm.canonical_name]?.reagent_lot     || null,
-        date_conjugated: conjForm[mm.canonical_name]?.date_conjugated || null,
-        operator:        conjForm[mm.canonical_name]?.operator        || null,
-        notes:           conjForm[mm.canonical_name]?.notes           || null,
+        material_lot_id:  conjForm[mm.canonical_name]?.material_lot_id  || null,
+        reagent_lot:      conjForm[mm.canonical_name]?.reagent_lot      || null,
+        date_conjugated:  conjForm[mm.canonical_name]?.date_conjugated  || null,
+        operator:         conjForm[mm.canonical_name]?.operator         || null,
+        notes:            conjForm[mm.canonical_name]?.notes            || null,
       }))
       const cpg = lines.map(l => ({
         plate_position: l.plate_position,
@@ -337,6 +355,27 @@ function RunDetail({ api, runId, onBack }) {
     } catch {
       setSaveMsg('Save failed')
     } finally { setSaving(false) }
+  }
+
+  async function saveConjugation() {
+    setConjSaving(true); setConjMsg('')
+    try {
+      const nhsMods = (data?.mod_map || []).filter(mm => mm.delivery_method === 'nhs_ester')
+      const conjugation = nhsMods.map(mm => ({
+        modification_name: mm.canonical_name,
+        material_lot_id:  conjForm[mm.canonical_name]?.material_lot_id  || null,
+        reagent_lot:      conjForm[mm.canonical_name]?.reagent_lot      || null,
+        date_conjugated:  conjForm[mm.canonical_name]?.date_conjugated  || null,
+        operator:         conjForm[mm.canonical_name]?.operator         || null,
+        notes:            conjForm[mm.canonical_name]?.notes            || null,
+      }))
+      await api.put(`/runs/${runId}/conjugation`, { conjugation })
+      setConjMsg('Saved')
+      setConjLocked(true)
+      setTimeout(() => setConjMsg(''), 2500)
+    } catch {
+      setConjMsg('Save failed')
+    } finally { setConjSaving(false) }
   }
 
   async function saveResults(force = false) {
@@ -616,7 +655,7 @@ function RunDetail({ api, runId, onBack }) {
                   return (
                     <tr key="ammc6">
                       <td className="rl-reagent-label">
-                        AmMC6
+                        AminoMod C6
                         <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--text-dim)', fontFamily: 'var(--mono)' }}>pos {nhsSlots}</span>
                       </td>
                       <td className="mono">{v.lot_number || '—'}</td>
@@ -685,27 +724,6 @@ function RunDetail({ api, runId, onBack }) {
                 </div>
               )}
             </div>
-            {(data?.mod_map || []).some(mm => mm.delivery_method === 'nhs_ester') && (
-              <>
-                <div className="rl-section-hdr" style={{ borderTop: '1px solid var(--border)', borderBottom: 'none' }}>
-                  <h3>NHS Ester Conjugation</h3>
-                </div>
-                <table className="rl-rtable" style={{ margin: '0 14px 14px' }}>
-                  <thead><tr><th>Modification</th><th>NHS ester lot</th><th>Date conjugated</th><th>Operator</th><th>Notes</th></tr></thead>
-                  <tbody>
-                    {(data?.mod_map || []).filter(mm => mm.delivery_method === 'nhs_ester').map(mm => (
-                      <tr key={mm.canonical_name}>
-                        <td className="rl-reagent-label">{mm.canonical_name}</td>
-                        <td className="mono">{conjForm[mm.canonical_name]?.reagent_lot || '—'}</td>
-                        <td className="mono">{conjForm[mm.canonical_name]?.date_conjugated || '—'}</td>
-                        <td>{conjForm[mm.canonical_name]?.operator || '—'}</td>
-                        <td>{conjForm[mm.canonical_name]?.notes || '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </>
-            )}
           </>
         ) : (
           /* ── editable form ── */
@@ -787,13 +805,13 @@ function RunDetail({ api, runId, onBack }) {
                 })}
                 {(data?.mod_map || []).some(mm => mm.delivery_method === 'nhs_ester') && (() => {
                   const v = rForm['ammc6'] || EMPTY_R
-                  const avail = materialLots.filter(l => l.material_type === 'amidite' && l.canonical_name === 'AmMC6')
+                  const avail = materialLots.filter(l => l.material_type === 'amidite' && l.canonical_name === 'AminoMod C6')
                   const fullName = materialLots.find(l => l.id === v.material_lot_id)?.name || ''
                   const nhsSlots = (data?.mod_map || []).filter(mm => mm.delivery_method === 'nhs_ester').map(mm => mm.synth_slot).join(', ')
                   return (
                     <tr key="ammc6">
                       <td className="rl-reagent-label">
-                        AmMC6
+                        AminoMod C6
                         <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--text-dim)', fontFamily: 'var(--mono)' }}>pos {nhsSlots}</span>
                       </td>
                       <td>
@@ -893,45 +911,99 @@ function RunDetail({ api, runId, onBack }) {
                 )
               })()}
             </div>
-            {(data?.mod_map || []).some(mm => mm.delivery_method === 'nhs_ester') && (
-              <>
-                <div className="rl-section-hdr" style={{ borderTop: '1px solid var(--border)', borderBottom: 'none' }}>
-                  <h3>NHS Ester Conjugation</h3>
-                </div>
-                <div style={{ padding: '0 14px 14px' }}>
-                  <table className="rl-rtable">
-                    <thead>
-                      <tr><th>Modification</th><th>NHS ester lot</th><th>Date conjugated</th><th>Operator</th><th>Notes</th></tr>
-                    </thead>
-                    <tbody>
-                      {(data?.mod_map || []).filter(mm => mm.delivery_method === 'nhs_ester').map(mm => {
-                        const n = mm.canonical_name
-                        return (
-                          <tr key={n}>
-                            <td className="rl-reagent-label">{n}</td>
-                            <td><input className="rl-input" placeholder="lot #"
-                                       value={conjForm[n]?.reagent_lot ?? ''}
-                                       onChange={e => setConjForm(f => ({ ...f, [n]: { ...f[n], reagent_lot: e.target.value } }))} /></td>
-                            <td><input type="date" className="rl-input rl-date"
-                                       value={conjForm[n]?.date_conjugated ?? ''}
-                                       onChange={e => setConjForm(f => ({ ...f, [n]: { ...f[n], date_conjugated: e.target.value } }))} /></td>
-                            <td><input className="rl-input"
-                                       value={conjForm[n]?.operator ?? ''}
-                                       onChange={e => setConjForm(f => ({ ...f, [n]: { ...f[n], operator: e.target.value } }))} /></td>
-                            <td><input className="rl-input"
-                                       value={conjForm[n]?.notes ?? ''}
-                                       onChange={e => setConjForm(f => ({ ...f, [n]: { ...f[n], notes: e.target.value } }))} /></td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </>
-            )}
           </>
         )}
       </div>
+
+      {/* ── AminoMod C6 Conjugation (separate section, shown when NHS ester mods present) ── */}
+      {(data?.mod_map || []).some(mm => mm.delivery_method === 'nhs_ester') && (
+        <div className="rl-section">
+          <div className="rl-section-hdr">
+            <h3>AminoMod C6 Conjugation</h3>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+              {conjLocked
+                ? <button className="btn-ghost" style={{ fontSize: 12 }} onClick={() => setConjLocked(false)}>Edit</button>
+                : <>
+                    {conjMsg && <span style={{ fontSize: 13, color: conjMsg === 'Saved' ? 'var(--accent)' : '#ef4444' }}>{conjMsg}</span>}
+                    <button className="btn-primary" disabled={conjSaving} onClick={saveConjugation}>
+                      {conjSaving ? 'Saving…' : 'Commit conjugation'}
+                    </button>
+                  </>
+              }
+            </div>
+          </div>
+          {conjLocked ? (
+            /* read-only */
+            <table className="rl-rtable" style={{ margin: '0 14px 14px' }}>
+              <thead>
+                <tr><th>Modification</th><th>Lot #</th><th>Full name</th><th>Date conjugated</th><th>Operator</th><th>Notes</th></tr>
+              </thead>
+              <tbody>
+                {(data?.mod_map || []).filter(mm => mm.delivery_method === 'nhs_ester').map(mm => {
+                  const cf = conjForm[mm.canonical_name] || {}
+                  const lotName = materialLots.find(l => l.id === cf.material_lot_id)?.name || '—'
+                  return (
+                    <tr key={mm.canonical_name}>
+                      <td className="rl-reagent-label">{mm.canonical_name}</td>
+                      <td className="mono">{cf.reagent_lot || '—'}</td>
+                      <td>{lotName}</td>
+                      <td className="mono">{cf.date_conjugated || '—'}</td>
+                      <td>{cf.operator || '—'}</td>
+                      <td>{cf.notes || '—'}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          ) : (
+            /* editable */
+            <div style={{ padding: '0 14px 14px' }}>
+              <table className="rl-rtable">
+                <thead>
+                  <tr><th>Modification</th><th>Lot #</th><th>Full name</th><th>Date conjugated</th><th>Operator</th><th>Notes</th></tr>
+                </thead>
+                <tbody>
+                  {(data?.mod_map || []).filter(mm => mm.delivery_method === 'nhs_ester').map(mm => {
+                    const n = mm.canonical_name
+                    const cf = conjForm[n] || {}
+                    const avail = materialLots.filter(l => l.material_type === 'nhs' && l.canonical_name === n)
+                    const fullName = materialLots.find(l => l.id === cf.material_lot_id)?.name || ''
+                    return (
+                      <tr key={n}>
+                        <td className="rl-reagent-label">{n}</td>
+                        <td>
+                          <select className="rl-input rl-select"
+                                  value={cf.material_lot_id ?? ''}
+                                  onChange={e => {
+                                    const id = e.target.value ? parseInt(e.target.value) : null
+                                    const lot = materialLots.find(l => l.id === id)
+                                    setConjForm(f => ({ ...f, [n]: { ...f[n], material_lot_id: id, reagent_lot: lot?.lot_number ?? '' } }))
+                                  }}>
+                            <option value="">— select lot —</option>
+                            {avail.map(l => (
+                              <option key={l.id} value={l.id}>{l.lot_number}{l.provider ? ` (${l.provider})` : ''}</option>
+                            ))}
+                          </select>
+                        </td>
+                        <td style={{ fontSize: 12, color: 'var(--text-dim)' }}>{fullName || <span className="rl-na">—</span>}</td>
+                        <td><input type="date" className="rl-input rl-date"
+                                   value={cf.date_conjugated ?? ''}
+                                   onChange={e => setConjForm(f => ({ ...f, [n]: { ...f[n], date_conjugated: e.target.value } }))} /></td>
+                        <td><input className="rl-input"
+                                   value={cf.operator ?? ''}
+                                   onChange={e => setConjForm(f => ({ ...f, [n]: { ...f[n], operator: e.target.value } }))} /></td>
+                        <td><input className="rl-input"
+                                   value={cf.notes ?? ''}
+                                   onChange={e => setConjForm(f => ({ ...f, [n]: { ...f[n], notes: e.target.value } }))} /></td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── results (only after started) ── */}
       {run.started_at && (
@@ -1113,6 +1185,7 @@ function RunDetail({ api, runId, onBack }) {
           const orderRefs = [...new Set(lines.map(l => l.order_ref ?? ''))].sort()
           const orderColor = {}
           orderRefs.forEach((ref, i) => { orderColor[ref] = ORDER_PALETTE[i % ORDER_PALETTE.length] })
+          const nhsMods = (data.mod_map || []).filter(mm => mm.delivery_method === 'nhs_ester')
           return (
             <>
               {colorByOrder && orderRefs.length > 1 && (
@@ -1127,11 +1200,33 @@ function RunDetail({ api, runId, onBack }) {
               )}
               <table className="rl-table">
                 <thead>
-                  <tr><th>Pos</th><th>Name</th><th>Order</th><th>Type</th><th>Sequence</th><th>nt</th><th>MW calc (Da)</th></tr>
+                  <tr>
+                    <th>Pos</th><th>Name</th><th>Order</th><th>Type</th><th>Sequence</th><th>nt</th>
+                    <th>MW calc (Da)</th>
+                    {nhsMods.length > 0 && <th>Conjugate MW (Da)</th>}
+                  </tr>
                 </thead>
                 <tbody>
                   {colMajorSort(lines).map(l => {
                     const color = colorByOrder ? orderColor[l.order_ref ?? ''] : null
+                    const conjMw = nhsMods.length > 0 ? (() => {
+                      if (!l.calc_mw) return null
+                      const baseMw = parseFloat(l.calc_mw)
+                      if (isNaN(baseMw)) return null
+                      const seq = l.annotated_sequence || ''
+                      let delta = 0; let found = false
+                      for (const mm of nhsMods) {
+                        const n = countModInSeq(seq, mm.canonical_name, mm.aliases)
+                        if (!n) continue
+                        found = true
+                        const lotId = conjForm[mm.canonical_name]?.material_lot_id
+                        if (!lotId) return null
+                        const lot = materialLots.find(lo => lo.id === lotId)
+                        if (lot?.mw_addition == null) return null
+                        delta += n * parseFloat(lot.mw_addition)
+                      }
+                      return found ? Math.round((baseMw + delta) * 10) / 10 : null
+                    })() : null
                     return (
                       <tr key={l.plate_position}
                           style={color ? { borderLeft: `3px solid ${color}`, background: color + '18' } : {}}>
@@ -1141,7 +1236,10 @@ function RunDetail({ api, runId, onBack }) {
                         <td><span className={`tag ${l.oligo_type === 'DNA' ? '' : 'rna'}`}>{l.oligo_type ?? '—'}</span></td>
                         <td className="mono rl-seq">{l.synth_sequence || applyModMap(l.annotated_sequence || '', data.mod_map)}</td>
                         <td className="mono">{l.length_nt}</td>
-                        <td className="mono">{l.calc_mw != null ? l.calc_mw.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 }) : '—'}</td>
+                        <td className="mono">{l.calc_mw != null ? parseFloat(l.calc_mw).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : '—'}</td>
+                        {nhsMods.length > 0 && (
+                          <td className="mono">{conjMw != null ? conjMw.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : '—'}</td>
+                        )}
                       </tr>
                     )
                   })}

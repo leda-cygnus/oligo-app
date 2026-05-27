@@ -754,7 +754,7 @@ app.get('/api/material-lots', async (req, res) => {
   await withDb(req, res, async (client) => {
     const result = await client.query(`
       SELECT id, material_type, canonical_name, name, cas_number,
-             catalogue_number, lot_number, manufacturer, vendor, mw, fw,
+             catalogue_number, lot_number, manufacturer, vendor, mw, fw, mw_addition,
              to_char(received_date, 'YYYY-MM-DD') AS received_date,
              to_char(expiry_date,  'YYYY-MM-DD') AS expiry_date,
              out_of_stock
@@ -769,7 +769,7 @@ app.get('/api/material-lots', async (req, res) => {
 app.post('/api/material-lots', async (req, res) => {
   const { material_type, canonical_name, name, cas_number,
           catalogue_number, lot_number,
-          manufacturer, vendor, mw, fw, received_date, expiry_date } = req.body
+          manufacturer, vendor, mw, fw, mw_addition, received_date, expiry_date } = req.body
   if (!material_type || !lot_number)
     return res.status(400).json({ error: 'material_type and lot_number required' })
   await withDb(req, res, async (client) => {
@@ -777,17 +777,17 @@ app.post('/api/material-lots', async (req, res) => {
       INSERT INTO material_lot
         (material_type, canonical_name, name, cas_number,
          catalogue_number, lot_number, manufacturer, vendor,
-         mw, fw, received_date, expiry_date)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+         mw, fw, mw_addition, received_date, expiry_date)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
       RETURNING id, material_type, canonical_name, name, cas_number,
-        catalogue_number, lot_number, manufacturer, vendor, mw, fw,
+        catalogue_number, lot_number, manufacturer, vendor, mw, fw, mw_addition,
         to_char(received_date, 'YYYY-MM-DD') AS received_date,
         to_char(expiry_date,  'YYYY-MM-DD') AS expiry_date,
         out_of_stock
     `, [material_type, canonical_name || null, name || null, cas_number || null,
         catalogue_number || null, lot_number,
         manufacturer || null, vendor || null,
-        mw || null, fw || null,
+        mw || null, fw || null, mw_addition || null,
         received_date || null, expiry_date || null])
     res.json(r.rows[0])
   })
@@ -799,7 +799,7 @@ app.put('/api/material-lots/:id', async (req, res) => {
   if (!id) return res.status(400).json({ error: 'invalid id' })
   const { material_type, canonical_name, name, cas_number,
           catalogue_number, lot_number,
-          manufacturer, vendor, mw, fw, received_date, expiry_date } = req.body
+          manufacturer, vendor, mw, fw, mw_addition, received_date, expiry_date } = req.body
   if (!material_type || !lot_number)
     return res.status(400).json({ error: 'material_type and lot_number required' })
   await withDb(req, res, async (client) => {
@@ -815,18 +815,19 @@ app.put('/api/material-lots/:id', async (req, res) => {
         vendor           = $8,
         mw               = $9,
         fw               = $10,
-        received_date    = $11,
-        expiry_date      = $12
-      WHERE id = $13
+        mw_addition      = $11,
+        received_date    = $12,
+        expiry_date      = $13
+      WHERE id = $14
       RETURNING id, material_type, canonical_name, name, cas_number,
-        catalogue_number, lot_number, manufacturer, vendor, mw, fw,
+        catalogue_number, lot_number, manufacturer, vendor, mw, fw, mw_addition,
         to_char(received_date, 'YYYY-MM-DD') AS received_date,
         to_char(expiry_date,  'YYYY-MM-DD') AS expiry_date,
         out_of_stock
     `, [material_type, canonical_name || null, name || null, cas_number || null,
         catalogue_number || null, lot_number,
         manufacturer || null, vendor || null,
-        mw || null, fw || null,
+        mw || null, fw || null, mw_addition || null,
         received_date || null, expiry_date || null,
         id])
     if (!r.rows.length) return res.status(404).json({ error: 'Not found' })
@@ -953,7 +954,7 @@ app.get('/api/runs/:id/reagents', async (req, res) => {
     `, [runId])
 
     const ownConj = await client.query(`
-      SELECT modification_name, reagent_lot,
+      SELECT modification_name, reagent_lot, material_lot_id,
              to_char(date_conjugated, 'YYYY-MM-DD') AS date_conjugated, operator, notes
       FROM synthesis_run_conjugation WHERE run_id = $1
     `, [runId])
@@ -1073,12 +1074,13 @@ app.put('/api/runs/:id/reagents', async (req, res) => {
         if (!c.modification_name) continue
         await client.query(`
           INSERT INTO synthesis_run_conjugation
-            (run_id, modification_name, reagent_lot, date_conjugated, operator, notes)
-          VALUES ($1, $2, $3, $4::date, $5, $6)
+            (run_id, modification_name, reagent_lot, material_lot_id, date_conjugated, operator, notes)
+          VALUES ($1, $2, $3, $4, $5::date, $6, $7)
           ON CONFLICT (run_id, modification_name) DO UPDATE
-            SET reagent_lot = EXCLUDED.reagent_lot, date_conjugated = EXCLUDED.date_conjugated,
+            SET reagent_lot = EXCLUDED.reagent_lot, material_lot_id = EXCLUDED.material_lot_id,
+                date_conjugated = EXCLUDED.date_conjugated,
                 operator = EXCLUDED.operator, notes = EXCLUDED.notes
-        `, [runId, c.modification_name, c.reagent_lot || null,
+        `, [runId, c.modification_name, c.reagent_lot || null, c.material_lot_id || null,
             c.date_conjugated || null, c.operator || null, c.notes || null])
       }
 
@@ -1096,6 +1098,37 @@ app.put('/api/runs/:id/reagents', async (req, res) => {
       }
       // Recalculate MW for all lines in this run
       await recalcRunMws(client, runId)
+      await client.query('COMMIT')
+      res.json({ ok: true })
+    } catch (err) {
+      await client.query('ROLLBACK')
+      throw err
+    }
+  })
+})
+
+// PUT /api/runs/:id/conjugation — save NHS ester conjugation records independently
+app.put('/api/runs/:id/conjugation', async (req, res) => {
+  const runId = parseInt(req.params.id)
+  if (!runId) return res.status(400).json({ error: 'invalid run id' })
+  const { conjugation = [] } = req.body
+
+  await withDb(req, res, async (client) => {
+    await client.query('BEGIN')
+    try {
+      for (const c of conjugation) {
+        if (!c.modification_name) continue
+        await client.query(`
+          INSERT INTO synthesis_run_conjugation
+            (run_id, modification_name, reagent_lot, material_lot_id, date_conjugated, operator, notes)
+          VALUES ($1, $2, $3, $4, $5::date, $6, $7)
+          ON CONFLICT (run_id, modification_name) DO UPDATE
+            SET reagent_lot = EXCLUDED.reagent_lot, material_lot_id = EXCLUDED.material_lot_id,
+                date_conjugated = EXCLUDED.date_conjugated,
+                operator = EXCLUDED.operator, notes = EXCLUDED.notes
+        `, [runId, c.modification_name, c.reagent_lot || null, c.material_lot_id || null,
+            c.date_conjugated || null, c.operator || null, c.notes || null])
+      }
       await client.query('COMMIT')
       res.json({ ok: true })
     } catch (err) {
