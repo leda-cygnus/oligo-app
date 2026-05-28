@@ -33,6 +33,12 @@ oligo-app/
 
 ## Setup
 
+Run the setup script from the project root — it checks prerequisites, installs packages, creates `.env`, and optionally runs all migrations:
+
+```powershell
+.\setup.ps1
+```
+
 ### Prerequisites
 
 - Node.js 18+
